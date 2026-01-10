@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 jonashertner
+Copyright (c) 2025 ECG Diagnosis Partner
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,3 +19,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+CLINICAL DISCLAIMER
+
+This software is provided for educational and clinical decision support purposes
+only. It is not intended to replace professional medical judgment, diagnosis, or
+treatment. The creators and contributors of this software are not liable for any
+clinical decisions made based on its output. Always verify ECG interpretations
+with qualified medical professionals and correlate with clinical findings.
