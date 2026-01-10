@@ -652,9 +652,11 @@
       const [ecgImage, setEcgImage] = useState(null);
       const [imagePreview, setImagePreview] = useState(null);
       const [aiAnalysis, setAiAnalysis] = useState(null);
+      const [aiStructuredData, setAiStructuredData] = useState(null);
       const [isAnalyzing, setIsAnalyzing] = useState(false);
       const [apiKey, setApiKey] = useState('');
       const [showApiInput, setShowApiInput] = useState(false);
+      const [aiApplied, setAiApplied] = useState(false);
       
       const fileInputRef = useRef(null);
 
@@ -734,14 +736,16 @@
           setShowApiInput(true);
           return;
         }
-        
+
         setIsAnalyzing(true);
         setAiAnalysis(null);
-        
+        setAiStructuredData(null);
+        setAiApplied(false);
+
         try {
           const base64 = imagePreview.split(',')[1];
           const mediaType = ecgImage.type || 'image/jpeg';
-          
+
           const response = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
             headers: {
@@ -752,7 +756,7 @@
             },
             body: JSON.stringify({
               model: 'claude-sonnet-4-20250514',
-              max_tokens: 2000,
+              max_tokens: 3000,
               messages: [{
                 role: 'user',
                 content: [
@@ -762,8 +766,13 @@
                   },
                   {
                     type: 'text',
-                    text: `You are an expert cardiologist analyzing this 12-lead ECG. Provide a systematic interpretation:
+                    text: `You are an expert cardiologist analyzing this 12-lead ECG. Provide a systematic interpretation.
 
+${patientContext ? `Clinical context: ${patientContext}` : ''}
+
+IMPORTANT: You must respond with BOTH a detailed analysis AND a JSON block that I can parse.
+
+First, provide your detailed interpretation covering:
 1. RATE & RHYTHM: Calculate rate, identify rhythm
 2. AXIS: Estimate QRS axis
 3. INTERVALS: PR, QRS, QT assessment
@@ -772,21 +781,58 @@
 6. ST SEGMENTS: Any elevation or depression, which leads
 7. T WAVES: Inversions, peaked, hyperacute
 8. OVERALL IMPRESSION: List key findings
-9. DIFFERENTIAL DIAGNOSES: Most likely diagnoses based on findings
+9. DIFFERENTIAL DIAGNOSES: Most likely diagnoses
 10. RECOMMENDED ACTIONS: Clinical next steps
 
-${patientContext ? `Clinical context: ${patientContext}` : ''}
+Then, at the END of your response, include a JSON block in this exact format (wrapped in \`\`\`json code blocks):
 
-Be specific about lead locations. If image quality limits interpretation, note this.`
+\`\`\`json
+{
+  "parameters": {
+    "rate": <number or null>,
+    "pr": <number in ms or null>,
+    "qrs": <number in ms or null>,
+    "qt": <number in ms or null>,
+    "rr": <number in ms or null>,
+    "axis": "<normal/left/right/extreme or null>"
+  },
+  "findings": [
+    "Rate: <description>",
+    "Rhythm: <description>",
+    "Axis: <description>",
+    "Intervals: <description>",
+    "P Wave: <description>",
+    "QRS Morphology: <description>",
+    "ST Segment: <description>",
+    "T Wave: <description>"
+  ],
+  "impression": "<one-line overall impression>",
+  "urgency": "<EMERGENT/URGENT/ROUTINE>"
+}
+\`\`\`
+
+Be specific about lead locations. Only include findings you can confidently identify. If image quality limits interpretation, note this.`
                   }
                 ]
               }]
             })
           });
-          
+
           const data = await response.json();
           if (data.content?.[0]?.text) {
-            setAiAnalysis(data.content[0].text);
+            const fullText = data.content[0].text;
+            setAiAnalysis(fullText);
+
+            // Parse the JSON block from the response
+            const jsonMatch = fullText.match(/```json\s*([\s\S]*?)\s*```/);
+            if (jsonMatch) {
+              try {
+                const parsed = JSON.parse(jsonMatch[1]);
+                setAiStructuredData(parsed);
+              } catch (e) {
+                console.log('Could not parse AI structured data:', e);
+              }
+            }
           } else if (data.error) {
             setAiAnalysis(`Error: ${data.error.message}`);
           }
@@ -796,7 +842,53 @@ Be specific about lead locations. If image quality limits interpretation, note t
           setIsAnalyzing(false);
         }
       }, [ecgImage, imagePreview, apiKey, patientContext]);
-      
+
+      // Apply AI findings to the app
+      const applyAiFindings = useCallback(() => {
+        if (!aiStructuredData) return;
+
+        // Apply parameters
+        if (aiStructuredData.parameters) {
+          const p = aiStructuredData.parameters;
+          setParameters(prev => ({
+            ...prev,
+            rate: p.rate ? String(p.rate) : prev.rate,
+            pr: p.pr ? String(p.pr) : prev.pr,
+            qrs: p.qrs ? String(p.qrs) : prev.qrs,
+            qt: p.qt ? String(p.qt) : prev.qt,
+            rr: p.rr ? String(p.rr) : prev.rr,
+            axisI: p.axis === 'normal' ? '+' : p.axis === 'left' ? '+' : p.axis === 'right' ? '-' : p.axis === 'extreme' ? '-' : prev.axisI,
+            axisAVF: p.axis === 'normal' ? '+' : p.axis === 'left' ? '-' : p.axis === 'right' ? '+' : p.axis === 'extreme' ? '-' : prev.axisAVF,
+          }));
+        }
+
+        // Apply findings (merge with existing, avoid duplicates)
+        if (aiStructuredData.findings && Array.isArray(aiStructuredData.findings)) {
+          setFindings(prev => {
+            const newFindings = [...prev];
+            aiStructuredData.findings.forEach(finding => {
+              if (finding && !newFindings.includes(finding)) {
+                newFindings.push(finding);
+              }
+            });
+            return newFindings;
+          });
+        }
+
+        // Add AI impression as a finding if present
+        if (aiStructuredData.impression) {
+          setFindings(prev => {
+            const impressionFinding = `AI Impression: ${aiStructuredData.impression}`;
+            if (!prev.includes(impressionFinding)) {
+              return [...prev, impressionFinding];
+            }
+            return prev;
+          });
+        }
+
+        setAiApplied(true);
+      }, [aiStructuredData]);
+
       const generateReport = useCallback(() => {
         const lines = [
           '══════════════════════════════════════════════════════════════',
@@ -844,6 +936,8 @@ Be specific about lead locations. If image quality limits interpretation, note t
         setEcgImage(null);
         setImagePreview(null);
         setAiAnalysis(null);
+        setAiStructuredData(null);
+        setAiApplied(false);
       }, []);
 
       // ============================================
@@ -2065,7 +2159,7 @@ Be specific about lead locations. If image quality limits interpretation, note t
                           )}
                         </button>
                         <button
-                          onClick={() => { setEcgImage(null); setImagePreview(null); setAiAnalysis(null); }}
+                          onClick={() => { setEcgImage(null); setImagePreview(null); setAiAnalysis(null); setAiStructuredData(null); setAiApplied(false); }}
                           style={{
                             background: '#27272a',
                             border: 'none',
@@ -2093,9 +2187,108 @@ Be specific about lead locations. If image quality limits interpretation, note t
                         padding: '20px',
                       }}
                     >
-                      <h3 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px', color: '#22c55e' }}>
-                        ✓ AI Interpretation
-                      </h3>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                        <h3 style={{ fontSize: '14px', fontWeight: '600', color: '#22c55e', margin: 0 }}>
+                          ✓ AI Interpretation
+                        </h3>
+                        {aiStructuredData && (
+                          <button
+                            onClick={applyAiFindings}
+                            disabled={aiApplied}
+                            style={{
+                              background: aiApplied ? '#166534' : '#22c55e',
+                              border: 'none',
+                              borderRadius: '6px',
+                              padding: '8px 16px',
+                              color: 'white',
+                              fontSize: '12px',
+                              fontWeight: '600',
+                              cursor: aiApplied ? 'default' : 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                            }}
+                          >
+                            {aiApplied ? (
+                              <>✓ Applied to App</>
+                            ) : (
+                              <>→ Apply Findings to App</>
+                            )}
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Structured Data Preview */}
+                      {aiStructuredData && !aiApplied && (
+                        <div style={{
+                          background: 'rgba(34, 197, 94, 0.1)',
+                          border: '1px solid rgba(34, 197, 94, 0.3)',
+                          borderRadius: '6px',
+                          padding: '12px',
+                          marginBottom: '12px',
+                        }}>
+                          <div style={{ fontSize: '11px', color: '#22c55e', marginBottom: '8px', fontWeight: '600' }}>
+                            Ready to apply:
+                          </div>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                            {aiStructuredData.parameters?.rate && (
+                              <span style={{ background: '#27272a', padding: '4px 8px', borderRadius: '4px', fontSize: '11px' }}>
+                                Rate: {aiStructuredData.parameters.rate} bpm
+                              </span>
+                            )}
+                            {aiStructuredData.parameters?.pr && (
+                              <span style={{ background: '#27272a', padding: '4px 8px', borderRadius: '4px', fontSize: '11px' }}>
+                                PR: {aiStructuredData.parameters.pr} ms
+                              </span>
+                            )}
+                            {aiStructuredData.parameters?.qrs && (
+                              <span style={{ background: '#27272a', padding: '4px 8px', borderRadius: '4px', fontSize: '11px' }}>
+                                QRS: {aiStructuredData.parameters.qrs} ms
+                              </span>
+                            )}
+                            {aiStructuredData.parameters?.qt && (
+                              <span style={{ background: '#27272a', padding: '4px 8px', borderRadius: '4px', fontSize: '11px' }}>
+                                QT: {aiStructuredData.parameters.qt} ms
+                              </span>
+                            )}
+                            {aiStructuredData.parameters?.axis && (
+                              <span style={{ background: '#27272a', padding: '4px 8px', borderRadius: '4px', fontSize: '11px' }}>
+                                Axis: {aiStructuredData.parameters.axis}
+                              </span>
+                            )}
+                            {aiStructuredData.findings && (
+                              <span style={{ background: '#27272a', padding: '4px 8px', borderRadius: '4px', fontSize: '11px' }}>
+                                + {aiStructuredData.findings.length} findings
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Applied Confirmation */}
+                      {aiApplied && (
+                        <div style={{
+                          background: 'rgba(34, 197, 94, 0.15)',
+                          border: '1px solid rgba(34, 197, 94, 0.4)',
+                          borderRadius: '6px',
+                          padding: '12px',
+                          marginBottom: '12px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                        }}>
+                          <span style={{ color: '#22c55e', fontSize: '16px' }}>✓</span>
+                          <div>
+                            <div style={{ fontSize: '12px', color: '#22c55e', fontWeight: '600' }}>
+                              Findings applied successfully
+                            </div>
+                            <div style={{ fontSize: '11px', color: '#71717a' }}>
+                              Parameters, findings, and differentials have been updated. Check the sidebar and Differentials tab.
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
                       <div style={{
                         fontSize: '13px',
                         color: '#e4e4e7',
@@ -2105,10 +2298,10 @@ Be specific about lead locations. If image quality limits interpretation, note t
                         background: '#0a0a0b',
                         padding: '16px',
                         borderRadius: '6px',
-                        maxHeight: '500px',
+                        maxHeight: '400px',
                         overflowY: 'auto',
                       }}>
-                        {aiAnalysis}
+                        {aiAnalysis.replace(/```json[\s\S]*?```/g, '').trim()}
                       </div>
                       <div style={{
                         marginTop: '12px',
