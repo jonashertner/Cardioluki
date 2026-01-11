@@ -368,33 +368,102 @@
       { id: "claude-opus-4-5-20251101", label: "Claude Opus 4.5 (max quality)" },
     ];
 
-    // Second-opinion JSON schema (Structured Outputs beta)
+    // Standard 12-lead names for reference
+    const STANDARD_LEADS = ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"];
+
+    // ECG pattern reference library for similar case matching
+    const ECG_PATTERN_LIBRARY = [
+      { id: "stemi_anterior", name: "Anterior STEMI", leads: ["V1", "V2", "V3", "V4"], description: "ST elevation in V1-V4 with reciprocal changes in inferior leads" },
+      { id: "stemi_inferior", name: "Inferior STEMI", leads: ["II", "III", "aVF"], description: "ST elevation in inferior leads with reciprocal changes in I, aVL" },
+      { id: "stemi_lateral", name: "Lateral STEMI", leads: ["I", "aVL", "V5", "V6"], description: "ST elevation in lateral leads" },
+      { id: "stemi_posterior", name: "Posterior STEMI", leads: ["V1", "V2", "V3"], description: "ST depression V1-V3 (mirror image), tall R waves" },
+      { id: "wellens_a", name: "Wellens Type A", leads: ["V2", "V3"], description: "Biphasic T waves in V2-V3, critical LAD stenosis" },
+      { id: "wellens_b", name: "Wellens Type B", leads: ["V2", "V3", "V4"], description: "Deep symmetric T inversions V2-V4" },
+      { id: "de_winter", name: "de Winter Pattern", leads: ["V1", "V2", "V3", "V4"], description: "Upsloping ST depression with tall T waves, LAD occlusion equivalent" },
+      { id: "sgarbossa", name: "Sgarbossa Criteria", leads: ["any"], description: "STEMI in setting of LBBB or paced rhythm" },
+      { id: "brugada_1", name: "Brugada Type 1", leads: ["V1", "V2"], description: "Coved ST elevation ≥2mm with negative T wave" },
+      { id: "brugada_2", name: "Brugada Type 2", leads: ["V1", "V2"], description: "Saddleback pattern with ST elevation ≥2mm" },
+      { id: "long_qt", name: "Long QT Syndrome", leads: ["all"], description: "Prolonged QTc >470ms (male) or >480ms (female)" },
+      { id: "hyper_k", name: "Hyperkalemia", leads: ["all"], description: "Peaked T waves, widened QRS, flattened P waves" },
+      { id: "hypo_k", name: "Hypokalemia", leads: ["all"], description: "Flattened T waves, U waves, ST depression" },
+      { id: "pe_s1q3t3", name: "PE Pattern (S1Q3T3)", leads: ["I", "III"], description: "S wave in I, Q wave and T inversion in III" },
+      { id: "pericarditis", name: "Acute Pericarditis", leads: ["all"], description: "Diffuse ST elevation with PR depression, Spodick sign" },
+      { id: "lvh_strain", name: "LVH with Strain", leads: ["V5", "V6", "I", "aVL"], description: "Voltage criteria + ST depression/T inversion in lateral leads" },
+      { id: "rvh", name: "RVH", leads: ["V1", "V2"], description: "Right axis, tall R in V1, deep S in V5-V6" },
+      { id: "afib", name: "Atrial Fibrillation", leads: ["II", "V1"], description: "Irregularly irregular, no P waves, fibrillatory baseline" },
+      { id: "aflutter", name: "Atrial Flutter", leads: ["II", "III", "aVF"], description: "Sawtooth flutter waves at ~300bpm, regular ventricular response" },
+      { id: "wpw", name: "WPW Pattern", leads: ["all"], description: "Short PR, delta wave, wide QRS" },
+      { id: "avb_1", name: "First Degree AV Block", leads: ["II"], description: "PR interval >200ms" },
+      { id: "avb_2_1", name: "Mobitz I (Wenckebach)", leads: ["II"], description: "Progressive PR prolongation then dropped beat" },
+      { id: "avb_2_2", name: "Mobitz II", leads: ["II"], description: "Constant PR with sudden dropped beats" },
+      { id: "avb_3", name: "Complete Heart Block", leads: ["II"], description: "AV dissociation, escape rhythm" },
+      { id: "lbbb", name: "LBBB", leads: ["V1", "V6"], description: "QRS ≥120ms, rS in V1, broad R in V6" },
+      { id: "rbbb", name: "RBBB", leads: ["V1", "V6"], description: "QRS ≥120ms, rsR' in V1, wide S in V6" },
+      { id: "lafb", name: "LAFB", leads: ["I", "II", "aVL"], description: "LAD beyond -45°, qR in I/aVL, rS in II/III/aVF" },
+      { id: "lpfb", name: "LPFB", leads: ["I", "II", "III"], description: "RAD >90°, rS in I, qR in III (after excluding RVH)" },
+    ];
+
+    // Second-opinion JSON schema (Enhanced - Structured Outputs beta)
     const AI_SECOND_OPINION_SCHEMA = {
       type: "object",
       additionalProperties: false,
       required: [
+        "image_calibration",
         "image_quality",
         "measurements",
+        "lead_analysis",
         "step_findings",
+        "pattern_matches",
         "impression",
         "differentials",
+        "clinical_decision_support",
+        "uncertainty",
         "red_flags",
         "limitations"
       ],
       properties: {
+        // Image calibration detection
+        image_calibration: {
+          type: "object",
+          additionalProperties: false,
+          required: ["paper_speed_mm_s", "voltage_scale_mm_mv", "detected_leads", "image_orientation", "calibration_confidence"],
+          properties: {
+            paper_speed_mm_s: { type: ["number", "null"], description: "Detected paper speed (typically 25 or 50)" },
+            voltage_scale_mm_mv: { type: ["number", "null"], description: "Detected voltage scale (typically 10 or 20)" },
+            detected_leads: { type: "array", items: { type: "string" }, description: "Which leads are visible in image" },
+            image_orientation: { type: "string", enum: ["normal", "rotated_90", "rotated_180", "rotated_270", "unknown"] },
+            calibration_confidence: { type: "string", enum: ["high", "medium", "low"] }
+          }
+        },
+        // Image quality assessment
         image_quality: {
           type: "object",
           additionalProperties: false,
-          required: ["overall", "issues"],
+          required: ["overall", "issues", "artifacts", "recommendations"],
           properties: {
             overall: { type: "string", enum: ["excellent", "good", "limited", "uninterpretable"] },
-            issues: { type: "array", items: { type: "string" } }
+            issues: { type: "array", items: { type: "string" } },
+            artifacts: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["type", "leads_affected", "severity"],
+                properties: {
+                  type: { type: "string", enum: ["baseline_wander", "muscle_artifact", "sixty_hz", "motion", "electrode", "other"] },
+                  leads_affected: { type: "array", items: { type: "string" } },
+                  severity: { type: "string", enum: ["mild", "moderate", "severe"] }
+                }
+              }
+            },
+            recommendations: { type: "array", items: { type: "string" } }
           }
         },
+        // Global measurements
         measurements: {
           type: "object",
           additionalProperties: false,
-          required: ["rate_bpm", "rr_ms", "pr_ms", "qrs_ms", "qt_ms", "qtc_bazett_ms", "axis_deg"],
+          required: ["rate_bpm", "rr_ms", "pr_ms", "qrs_ms", "qt_ms", "qtc_bazett_ms", "qtc_fridericia_ms", "axis_deg", "measurement_confidence"],
           properties: {
             rate_bpm: { type: ["number", "null"] },
             rr_ms: { type: ["number", "null"] },
@@ -402,24 +471,113 @@
             qrs_ms: { type: ["number", "null"] },
             qt_ms: { type: ["number", "null"] },
             qtc_bazett_ms: { type: ["number", "null"] },
-            axis_deg: { type: ["number", "null"] }
+            qtc_fridericia_ms: { type: ["number", "null"] },
+            axis_deg: { type: ["number", "null"] },
+            p_axis_deg: { type: ["number", "null"] },
+            t_axis_deg: { type: ["number", "null"] },
+            measurement_confidence: { type: "string", enum: ["high", "medium", "low"] }
           }
         },
+        // Per-lead detailed analysis
+        lead_analysis: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["lead", "p_wave", "qrs_complex", "st_segment", "t_wave", "abnormalities"],
+            properties: {
+              lead: { type: "string" },
+              p_wave: {
+                type: "object",
+                additionalProperties: false,
+                required: ["present", "amplitude_mv", "duration_ms", "morphology"],
+                properties: {
+                  present: { type: "boolean" },
+                  amplitude_mv: { type: ["number", "null"] },
+                  duration_ms: { type: ["number", "null"] },
+                  morphology: { type: "string", enum: ["normal", "peaked", "bifid", "inverted", "absent", "variable"] }
+                }
+              },
+              pr_interval_ms: { type: ["number", "null"] },
+              qrs_complex: {
+                type: "object",
+                additionalProperties: false,
+                required: ["q_wave_mm", "r_wave_mm", "s_wave_mm", "duration_ms", "morphology"],
+                properties: {
+                  q_wave_mm: { type: ["number", "null"] },
+                  r_wave_mm: { type: ["number", "null"] },
+                  s_wave_mm: { type: ["number", "null"] },
+                  r_prime_mm: { type: ["number", "null"] },
+                  s_prime_mm: { type: ["number", "null"] },
+                  duration_ms: { type: ["number", "null"] },
+                  morphology: { type: "string", enum: ["normal", "rsr_prime", "qr", "qs", "rs", "rS", "Rs", "notched", "slurred", "fragmented"] }
+                }
+              },
+              st_segment: {
+                type: "object",
+                additionalProperties: false,
+                required: ["deviation_mm", "morphology"],
+                properties: {
+                  deviation_mm: { type: ["number", "null"] },
+                  morphology: { type: "string", enum: ["isoelectric", "upsloping", "horizontal", "downsloping", "coved", "concave", "convex"] },
+                  j_point_mm: { type: ["number", "null"] }
+                }
+              },
+              t_wave: {
+                type: "object",
+                additionalProperties: false,
+                required: ["amplitude_mv", "morphology"],
+                properties: {
+                  amplitude_mv: { type: ["number", "null"] },
+                  morphology: { type: "string", enum: ["normal", "inverted", "flattened", "peaked", "biphasic", "hyperacute"] }
+                }
+              },
+              u_wave: {
+                type: "object",
+                additionalProperties: false,
+                required: ["present"],
+                properties: {
+                  present: { type: "boolean" },
+                  amplitude_mv: { type: ["number", "null"] },
+                  inverted: { type: "boolean" }
+                }
+              },
+              qt_interval_ms: { type: ["number", "null"] },
+              abnormalities: { type: "array", items: { type: "string" } }
+            }
+          }
+        },
+        // Step-based systematic findings
         step_findings: {
           type: "array",
           items: {
             type: "object",
             additionalProperties: false,
-            required: ["step_id", "finding", "leads", "confidence", "rationale"],
+            required: ["step_id", "finding", "leads", "confidence", "rationale", "clinical_significance"],
             properties: {
-              step_id: {
-                type: "string",
-                enum: ["rate", "rhythm", "axis", "intervals", "pwave", "qrsmorph", "st", "twave", "other"]
-              },
+              step_id: { type: "string", enum: ["rate", "rhythm", "axis", "intervals", "pwave", "qrsmorph", "st", "twave", "other"] },
               finding: { type: "string" },
               leads: { type: "array", items: { type: "string" } },
               confidence: { type: "string", enum: ["high", "medium", "low"] },
-              rationale: { type: "string" }
+              rationale: { type: "string" },
+              clinical_significance: { type: "string", enum: ["critical", "significant", "minor", "normal_variant"] }
+            }
+          }
+        },
+        // Pattern matching against known pathologies
+        pattern_matches: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["pattern_id", "pattern_name", "match_confidence", "supporting_features", "against_features"],
+            properties: {
+              pattern_id: { type: "string" },
+              pattern_name: { type: "string" },
+              match_confidence: { type: "number", minimum: 0, maximum: 1 },
+              supporting_features: { type: "array", items: { type: "string" } },
+              against_features: { type: "array", items: { type: "string" } },
+              reference_description: { type: "string" }
             }
           }
         },
@@ -429,12 +587,95 @@
           items: {
             type: "object",
             additionalProperties: false,
-            required: ["diagnosis", "likelihood", "rationale", "cannot_miss"],
+            required: ["diagnosis", "likelihood", "rationale", "cannot_miss", "workup_suggestions"],
             properties: {
               diagnosis: { type: "string" },
               likelihood: { type: "string", enum: ["high", "moderate", "low"] },
               rationale: { type: "string" },
-              cannot_miss: { type: "boolean" }
+              cannot_miss: { type: "boolean" },
+              workup_suggestions: { type: "array", items: { type: "string" } }
+            }
+          }
+        },
+        // Clinical decision support triggers
+        clinical_decision_support: {
+          type: "object",
+          additionalProperties: false,
+          required: ["suggested_actions", "risk_scores", "guideline_references"],
+          properties: {
+            suggested_actions: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["action", "urgency", "rationale"],
+                properties: {
+                  action: { type: "string" },
+                  urgency: { type: "string", enum: ["emergent", "urgent", "routine", "optional"] },
+                  rationale: { type: "string" }
+                }
+              }
+            },
+            risk_scores: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                sgarbossa_applicable: { type: "boolean" },
+                sgarbossa_score: { type: ["number", "null"] },
+                smith_modified_positive: { type: ["boolean", "null"] },
+                wellens_criteria_met: { type: ["boolean", "null"] },
+                de_winter_pattern: { type: ["boolean", "null"] }
+              },
+              required: ["sgarbossa_applicable"]
+            },
+            guideline_references: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["guideline", "finding", "recommendation"],
+                properties: {
+                  guideline: { type: "string" },
+                  finding: { type: "string" },
+                  recommendation: { type: "string" }
+                }
+              }
+            }
+          }
+        },
+        // Uncertainty quantification
+        uncertainty: {
+          type: "object",
+          additionalProperties: false,
+          required: ["overall_confidence", "limiting_factors", "recommend_actions"],
+          properties: {
+            overall_confidence: { type: "number", minimum: 0, maximum: 1 },
+            limiting_factors: { type: "array", items: { type: "string" } },
+            areas_of_uncertainty: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["finding", "uncertainty_reason"],
+                properties: {
+                  finding: { type: "string" },
+                  uncertainty_reason: { type: "string" },
+                  would_help: { type: "string" }
+                }
+              }
+            },
+            recommend_actions: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                repeat_ecg: { type: "boolean" },
+                get_12_lead: { type: "boolean" },
+                get_right_sided: { type: "boolean" },
+                get_posterior: { type: "boolean" },
+                serial_ecgs: { type: "boolean" },
+                compare_prior: { type: "boolean" }
+              },
+              required: ["repeat_ecg", "get_12_lead"]
             }
           }
         },
@@ -525,6 +766,207 @@
                                     'Acceptable bleeding risk for anticoagulation'
       };
     };
+
+    // ============================================
+    // IMAGE PREPROCESSING UTILITIES
+    // ============================================
+
+    // Canvas-based image enhancement for ECG analysis
+    const createImageProcessor = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+
+      // Enhance contrast for better ECG trace visibility
+      const enhanceContrast = (imageData, factor = 1.5) => {
+        const data = imageData.data;
+        const factor2 = (259 * (factor * 100 + 255)) / (255 * (259 - factor * 100));
+        for (let i = 0; i < data.length; i += 4) {
+          data[i] = Math.min(255, Math.max(0, factor2 * (data[i] - 128) + 128));
+          data[i + 1] = Math.min(255, Math.max(0, factor2 * (data[i + 1] - 128) + 128));
+          data[i + 2] = Math.min(255, Math.max(0, factor2 * (data[i + 2] - 128) + 128));
+        }
+        return imageData;
+      };
+
+      // Detect and correct image orientation
+      const detectOrientation = (imageData) => {
+        const { width, height, data } = imageData;
+        // Simple heuristic: ECGs are usually wider than tall
+        const isLandscape = width > height;
+        // Check for grid pattern orientation
+        let horizontalLines = 0;
+        let verticalLines = 0;
+
+        // Sample horizontal line detection
+        for (let y = 0; y < height; y += 10) {
+          let consecutive = 0;
+          for (let x = 0; x < width - 1; x++) {
+            const idx = (y * width + x) * 4;
+            const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+            // Check if pixel is reddish (ECG grid is often red/pink)
+            if (r > 150 && g < 100 && b < 100) consecutive++;
+            else if (consecutive > 20) { horizontalLines++; consecutive = 0; }
+          }
+        }
+
+        // Sample vertical line detection
+        for (let x = 0; x < width; x += 10) {
+          let consecutive = 0;
+          for (let y = 0; y < height - 1; y++) {
+            const idx = (y * width + x) * 4;
+            const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+            if (r > 150 && g < 100 && b < 100) consecutive++;
+            else if (consecutive > 20) { verticalLines++; consecutive = 0; }
+          }
+        }
+
+        return {
+          isLandscape,
+          gridDetected: horizontalLines > 5 || verticalLines > 5,
+          suggestedRotation: !isLandscape && horizontalLines < verticalLines ? 90 : 0
+        };
+      };
+
+      // Sharpen image for clearer trace definition
+      const sharpen = (imageData, amount = 0.5) => {
+        const { width, height, data } = imageData;
+        const output = new Uint8ClampedArray(data);
+        const kernel = [0, -amount, 0, -amount, 1 + 4 * amount, -amount, 0, -amount, 0];
+
+        for (let y = 1; y < height - 1; y++) {
+          for (let x = 1; x < width - 1; x++) {
+            for (let c = 0; c < 3; c++) {
+              let sum = 0;
+              for (let ky = -1; ky <= 1; ky++) {
+                for (let kx = -1; kx <= 1; kx++) {
+                  const idx = ((y + ky) * width + (x + kx)) * 4 + c;
+                  sum += data[idx] * kernel[(ky + 1) * 3 + (kx + 1)];
+                }
+              }
+              output[(y * width + x) * 4 + c] = Math.min(255, Math.max(0, sum));
+            }
+          }
+        }
+        return new ImageData(output, width, height);
+      };
+
+      // Normalize brightness and remove uneven lighting
+      const normalizeBackground = (imageData) => {
+        const { width, height, data } = imageData;
+        // Calculate local average brightness in blocks
+        const blockSize = 32;
+        const blocksX = Math.ceil(width / blockSize);
+        const blocksY = Math.ceil(height / blockSize);
+        const blockAvg = [];
+
+        for (let by = 0; by < blocksY; by++) {
+          for (let bx = 0; bx < blocksX; bx++) {
+            let sum = 0, count = 0;
+            for (let y = by * blockSize; y < Math.min((by + 1) * blockSize, height); y++) {
+              for (let x = bx * blockSize; x < Math.min((bx + 1) * blockSize, width); x++) {
+                const idx = (y * width + x) * 4;
+                sum += (data[idx] + data[idx + 1] + data[idx + 2]) / 3;
+                count++;
+              }
+            }
+            blockAvg[by * blocksX + bx] = sum / count;
+          }
+        }
+
+        // Apply local normalization
+        const globalAvg = blockAvg.reduce((a, b) => a + b, 0) / blockAvg.length;
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            const bx = Math.floor(x / blockSize);
+            const by = Math.floor(y / blockSize);
+            const localAvg = blockAvg[by * blocksX + bx];
+            const factor = globalAvg / (localAvg + 1);
+            const idx = (y * width + x) * 4;
+            data[idx] = Math.min(255, data[idx] * factor);
+            data[idx + 1] = Math.min(255, data[idx + 1] * factor);
+            data[idx + 2] = Math.min(255, data[idx + 2] * factor);
+          }
+        }
+        return imageData;
+      };
+
+      // Detect grid spacing for calibration
+      const detectGridSpacing = (imageData) => {
+        const { width, height, data } = imageData;
+        const horizontalSpacing = [];
+
+        // Analyze middle row for grid detection
+        const midY = Math.floor(height / 2);
+        let lastGridX = -1;
+
+        for (let x = 0; x < width; x++) {
+          const idx = (midY * width + x) * 4;
+          const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+          // Detect grid lines (red or dark on white background)
+          const isGrid = (r > 150 && g < 100 && b < 100) ||
+                         (r < 50 && g < 50 && b < 50);
+          if (isGrid && (lastGridX === -1 || x - lastGridX > 3)) {
+            if (lastGridX !== -1) horizontalSpacing.push(x - lastGridX);
+            lastGridX = x;
+          }
+        }
+
+        // Find most common spacing (small squares = 1mm)
+        if (horizontalSpacing.length > 5) {
+          const sorted = [...horizontalSpacing].sort((a, b) => a - b);
+          const median = sorted[Math.floor(sorted.length / 2)];
+          const smallSquare = median; // pixels per 1mm
+          const largeSquare = smallSquare * 5; // pixels per 5mm
+
+          return {
+            detected: true,
+            pixelsPerMm: smallSquare,
+            pixelsPer5mm: largeSquare,
+            estimatedPaperSpeed: 25, // standard
+            estimatedVoltage: 10    // standard 10mm/mV
+          };
+        }
+
+        return { detected: false };
+      };
+
+      // Process image with all enhancements
+      const processImage = async (imageDataUrl) => {
+        return new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            canvas.width = img.width;
+            canvas.height = img.height;
+            ctx.drawImage(img, 0, 0);
+
+            let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const orientation = detectOrientation(imageData);
+            const gridInfo = detectGridSpacing(imageData);
+
+            // Apply enhancements
+            imageData = normalizeBackground(imageData);
+            imageData = enhanceContrast(imageData, 1.3);
+            imageData = sharpen(imageData, 0.3);
+
+            ctx.putImageData(imageData, 0, 0);
+
+            resolve({
+              processedDataUrl: canvas.toDataURL('image/jpeg', 0.95),
+              orientation,
+              gridInfo,
+              originalWidth: img.width,
+              originalHeight: img.height
+            });
+          };
+          img.src = imageDataUrl;
+        });
+      };
+
+      return { processImage, enhanceContrast, sharpen, normalizeBackground, detectGridSpacing, detectOrientation };
+    };
+
+    // Singleton image processor
+    const imageProcessor = createImageProcessor();
 
     // Differential Diagnosis Engine
     const generateDifferentials = (findings) => {
@@ -885,75 +1327,137 @@
           return;
         }
 
-        const base64 = imagePreview.split(",")[1];
-        const mediaType = ecgImage.type || "image/jpeg";
-
-        const prompt = [
-          "You are providing a second-opinion ECG interpretation for a clinician.",
-          "Do not provide medication dosing. Avoid definitive claims when uncertain.",
-          "If a numeric measurement is not readable, return null and explain in limitations.",
-          "",
-          "Use these framework steps for step_findings.step_id:",
-          "- rate",
-          "- rhythm",
-          "- axis",
-          "- intervals",
-          "- pwave",
-          "- qrsmorph",
-          "- st",
-          "- twave",
-          "- other",
-          "",
-          "Return key findings with lead localization when possible.",
-          "Populate red_flags with cannot-miss patterns to consider, and limitations with uncertainty sources.",
-          sendContextToAI && patientContext ? "" : "Clinical context not provided.",
-          sendContextToAI && patientContext ? `Clinical context: ${patientContext}` : ""
-        ].filter(Boolean).join("\n");
-
-        const sendRequest = async (structured) => {
-          const headers = {
-            "Content-Type": "application/json",
-            "x-api-key": apiKey,
-            "anthropic-version": "2023-06-01",
-            "anthropic-dangerous-direct-browser-access": "true"
-          };
-
-          const body = {
-            model: aiModel,
-            max_tokens: 2000,
-            messages: [{
-              role: "user",
-              content: [
-                { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
-                { type: "text", text: prompt }
-              ]
-            }]
-          };
-
-          if (structured) {
-            headers["anthropic-beta"] = "structured-outputs-2025-11-13";
-            body.output_format = { type: "json_schema", schema: AI_SECOND_OPINION_SCHEMA };
-          }
-
-          const resp = await fetch("https://api.anthropic.com/v1/messages", {
-            method: "POST",
-            headers,
-            body: JSON.stringify(body)
-          });
-
-          const data = await resp.json();
-          if (!resp.ok) {
-            const msg = data?.error?.message || `Request failed (${resp.status})`;
-            throw new Error(msg);
-          }
-
-          const text = data?.content?.[0]?.text;
-          if (!text) throw new Error("Empty response from model.");
-          return text;
-        };
-
         setIsAnalyzing(true);
+
         try {
+          // Step 1: Preprocess image for enhanced analysis
+          let processedImage = imagePreview;
+          let preprocessInfo = null;
+
+          try {
+            const processed = await imageProcessor.processImage(imagePreview);
+            processedImage = processed.processedDataUrl;
+            preprocessInfo = {
+              orientation: processed.orientation,
+              gridInfo: processed.gridInfo,
+              dimensions: { width: processed.originalWidth, height: processed.originalHeight }
+            };
+          } catch (e) {
+            // Continue with original image if preprocessing fails
+            console.warn('Image preprocessing failed, using original:', e);
+          }
+
+          const base64 = processedImage.split(",")[1];
+          const mediaType = ecgImage.type || "image/jpeg";
+
+          // Build comprehensive multi-pass analysis prompt
+          const patternLibraryStr = ECG_PATTERN_LIBRARY.map(p =>
+            `  - ${p.id}: ${p.name} (${p.leads.join(', ')}) - ${p.description}`
+          ).join('\n');
+
+          const prompt = `You are an expert cardiologist providing a comprehensive second-opinion ECG interpretation for a clinician. Perform a systematic multi-pass analysis:
+
+## ANALYSIS PROTOCOL
+
+### PASS 1: Image Assessment & Calibration
+- Detect paper speed (typically 25 or 50 mm/s) from grid spacing or calibration mark
+- Detect voltage scale (typically 10 or 20 mm/mV) from calibration pulse
+- Identify which leads are visible and their arrangement
+- Assess image quality, orientation, and any artifacts
+- Note baseline wander, muscle artifact, 60Hz interference, or electrode issues
+
+### PASS 2: Global Measurements
+- Measure heart rate from RR intervals
+- Measure PR interval, QRS duration, QT interval
+- Calculate QTc using both Bazett and Fridericia formulas
+- Determine frontal plane axis (QRS, P wave, and T wave axes if discernible)
+- Note measurement confidence based on image quality
+
+### PASS 3: Lead-by-Lead Analysis
+For each visible lead, systematically evaluate:
+- P wave: present, amplitude, duration, morphology (normal/peaked/bifid/inverted/absent)
+- PR interval in that lead
+- QRS complex: Q/R/S wave amplitudes, R'/S' if present, duration, morphology
+- ST segment: deviation from baseline (mm), morphology (isoelectric/upsloping/horizontal/downsloping/coved/concave/convex)
+- T wave: amplitude, morphology (normal/inverted/flattened/peaked/biphasic/hyperacute)
+- U wave: present or absent, amplitude if present
+- Any lead-specific abnormalities
+
+### PASS 4: Pattern Recognition
+Compare findings against these known ECG patterns and report matches:
+${patternLibraryStr}
+
+For each potential pattern match, provide:
+- Match confidence (0-1 scale)
+- Supporting features present
+- Features that argue against the diagnosis
+- Reference description from the library
+
+### PASS 5: Synthesis & Clinical Decision Support
+- Generate primary impression with key diagnoses
+- List differential diagnoses with likelihood, rationale, and suggested workup
+- Identify clinical decision support triggers (Sgarbossa, Wellens, de Winter, etc.)
+- Reference relevant guidelines (AHA, ESC, ACC)
+- Suggest appropriate actions with urgency levels
+
+### PASS 6: Uncertainty Quantification
+- Provide overall confidence score (0-1)
+- List specific areas of uncertainty and what would help clarify
+- Recommend additional ECGs if needed (repeat, right-sided, posterior, serial, prior for comparison)
+
+## CRITICAL REMINDERS
+- If a measurement is not readable, return null and explain in limitations
+- Always flag "cannot-miss" diagnoses even if low probability
+- Mark clinical significance of each finding: critical, significant, minor, or normal_variant
+- Do NOT provide specific medication dosing
+- Be appropriately uncertain - this is a second opinion tool
+
+${sendContextToAI && patientContext ? `## CLINICAL CONTEXT PROVIDED\n${patientContext}` : '## NOTE: No clinical context provided - interpret ECG in isolation'}
+
+Use step_id values: rate, rhythm, axis, intervals, pwave, qrsmorph, st, twave, other`;
+
+          const sendRequest = async (structured) => {
+            const headers = {
+              "Content-Type": "application/json",
+              "x-api-key": apiKey,
+              "anthropic-version": "2023-06-01",
+              "anthropic-dangerous-direct-browser-access": "true"
+            };
+
+            const body = {
+              model: aiModel,
+              max_tokens: 8000,
+              messages: [{
+                role: "user",
+                content: [
+                  { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
+                  { type: "text", text: prompt }
+                ]
+              }]
+            };
+
+            if (structured) {
+              headers["anthropic-beta"] = "structured-outputs-2025-11-13";
+              body.output_format = { type: "json_schema", schema: AI_SECOND_OPINION_SCHEMA };
+            }
+
+            const resp = await fetch("https://api.anthropic.com/v1/messages", {
+              method: "POST",
+              headers,
+              body: JSON.stringify(body)
+            });
+
+            const data = await resp.json();
+            if (!resp.ok) {
+              const msg = data?.error?.message || `Request failed (${resp.status})`;
+              throw new Error(msg);
+            }
+
+            const text = data?.content?.[0]?.text;
+            if (!text) throw new Error("Empty response from model.");
+            return text;
+          };
+
           let text = null;
 
           // Try structured first (recommended), fall back to free text if needed
@@ -961,6 +1465,12 @@
             try {
               text = await sendRequest(true);
               const parsed = JSON.parse(text);
+
+              // Merge preprocessInfo into result if available
+              if (preprocessInfo && parsed.image_calibration) {
+                parsed._preprocessing = preprocessInfo;
+              }
+
               setAiResult(parsed);
               setAiRawText(text);
 
@@ -969,6 +1479,7 @@
               setAiSelectedFindings(sel);
               return;
             } catch (err) {
+              console.warn('Structured output failed, falling back:', err);
               // fall through to unstructured attempt
             }
           }
@@ -2333,22 +2844,117 @@
                       borderRadius: '8px',
                       padding: '20px',
                     }}>
-                      <h3 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px', color: '#e4e4e7' }}>
-                        Second opinion output (structured)
-                      </h3>
-
-                      <div style={{ marginBottom: '14px', fontSize: '12px', color: '#a1a1aa' }}>
-                        <div><strong>Image quality:</strong> {aiResult.image_quality?.overall || '-'}</div>
-                        {Array.isArray(aiResult.image_quality?.issues) && aiResult.image_quality.issues.length > 0 && (
-                          <ul style={{ marginTop: '6px', paddingLeft: '18px', lineHeight: '1.6' }}>
-                            {aiResult.image_quality.issues.map((x, i) => <li key={i}>{x}</li>)}
-                          </ul>
+                      {/* Header with confidence score */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
+                        <h3 style={{ fontSize: '14px', fontWeight: '600', color: '#e4e4e7', margin: 0 }}>
+                          AI Second Opinion Analysis
+                        </h3>
+                        {aiResult.uncertainty?.overall_confidence !== undefined && (
+                          <div style={{
+                            background: aiResult.uncertainty.overall_confidence >= 0.8 ? 'rgba(34, 197, 94, 0.15)' :
+                                       aiResult.uncertainty.overall_confidence >= 0.6 ? 'rgba(234, 179, 8, 0.15)' :
+                                       'rgba(239, 68, 68, 0.15)',
+                            border: `1px solid ${aiResult.uncertainty.overall_confidence >= 0.8 ? 'rgba(34, 197, 94, 0.3)' :
+                                                 aiResult.uncertainty.overall_confidence >= 0.6 ? 'rgba(234, 179, 8, 0.3)' :
+                                                 'rgba(239, 68, 68, 0.3)'}`,
+                            borderRadius: '16px',
+                            padding: '4px 10px',
+                            fontSize: '11px',
+                            fontWeight: '600',
+                            color: aiResult.uncertainty.overall_confidence >= 0.8 ? '#4ade80' :
+                                   aiResult.uncertainty.overall_confidence >= 0.6 ? '#facc15' : '#f87171'
+                          }}>
+                            Confidence: {Math.round(aiResult.uncertainty.overall_confidence * 100)}%
+                          </div>
                         )}
                       </div>
 
-                      <div style={{ marginBottom: '14px' }}>
+                      {/* Image Calibration & Quality Section */}
+                      <div style={{ marginBottom: '16px', display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '12px' }}>
+                        {/* Calibration */}
+                        <div style={{ background: '#0a0a0b', border: '1px solid #27272a', borderRadius: '6px', padding: '12px' }}>
+                          <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '8px', fontWeight: '600', textTransform: 'uppercase' }}>
+                            Image Calibration
+                          </div>
+                          <div style={{ fontSize: '12px', color: '#a1a1aa', display: 'grid', gap: '4px' }}>
+                            <div>Paper speed: <span style={{ color: '#e4e4e7', fontFamily: "'IBM Plex Mono', monospace" }}>
+                              {aiResult.image_calibration?.paper_speed_mm_s ? `${aiResult.image_calibration.paper_speed_mm_s} mm/s` : '-'}
+                            </span></div>
+                            <div>Voltage scale: <span style={{ color: '#e4e4e7', fontFamily: "'IBM Plex Mono', monospace" }}>
+                              {aiResult.image_calibration?.voltage_scale_mm_mv ? `${aiResult.image_calibration.voltage_scale_mm_mv} mm/mV` : '-'}
+                            </span></div>
+                            <div>Leads detected: <span style={{ color: '#e4e4e7' }}>
+                              {aiResult.image_calibration?.detected_leads?.join(', ') || '-'}
+                            </span></div>
+                            <div>Orientation: <span style={{ color: '#e4e4e7' }}>
+                              {aiResult.image_calibration?.image_orientation || '-'}
+                            </span></div>
+                          </div>
+                        </div>
+
+                        {/* Quality */}
+                        <div style={{ background: '#0a0a0b', border: '1px solid #27272a', borderRadius: '6px', padding: '12px' }}>
+                          <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '8px', fontWeight: '600', textTransform: 'uppercase' }}>
+                            Image Quality
+                          </div>
+                          <div style={{
+                            display: 'inline-block',
+                            padding: '2px 8px',
+                            borderRadius: '4px',
+                            fontSize: '11px',
+                            fontWeight: '600',
+                            marginBottom: '6px',
+                            background: aiResult.image_quality?.overall === 'excellent' ? 'rgba(34, 197, 94, 0.2)' :
+                                        aiResult.image_quality?.overall === 'good' ? 'rgba(59, 130, 246, 0.2)' :
+                                        aiResult.image_quality?.overall === 'limited' ? 'rgba(234, 179, 8, 0.2)' :
+                                        'rgba(239, 68, 68, 0.2)',
+                            color: aiResult.image_quality?.overall === 'excellent' ? '#4ade80' :
+                                   aiResult.image_quality?.overall === 'good' ? '#60a5fa' :
+                                   aiResult.image_quality?.overall === 'limited' ? '#facc15' : '#f87171'
+                          }}>
+                            {aiResult.image_quality?.overall?.toUpperCase() || 'UNKNOWN'}
+                          </div>
+                          {Array.isArray(aiResult.image_quality?.issues) && aiResult.image_quality.issues.length > 0 && (
+                            <ul style={{ paddingLeft: '16px', margin: '6px 0 0 0', color: '#a1a1aa', fontSize: '11px', lineHeight: '1.5' }}>
+                              {aiResult.image_quality.issues.map((x, i) => <li key={i}>{x}</li>)}
+                            </ul>
+                          )}
+                          {Array.isArray(aiResult.image_quality?.artifacts) && aiResult.image_quality.artifacts.length > 0 && (
+                            <div style={{ marginTop: '8px' }}>
+                              <div style={{ fontSize: '10px', color: '#71717a', marginBottom: '4px' }}>Artifacts:</div>
+                              {aiResult.image_quality.artifacts.map((a, i) => (
+                                <div key={i} style={{
+                                  display: 'inline-block',
+                                  padding: '2px 6px',
+                                  marginRight: '4px',
+                                  marginBottom: '4px',
+                                  background: a.severity === 'severe' ? 'rgba(239, 68, 68, 0.2)' :
+                                              a.severity === 'moderate' ? 'rgba(234, 179, 8, 0.2)' : 'rgba(100, 100, 100, 0.2)',
+                                  borderRadius: '3px',
+                                  fontSize: '10px',
+                                  color: '#a1a1aa'
+                                }}>
+                                  {a.type} ({a.leads_affected?.join(', ')})
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Measurements Section */}
+                      <div style={{ marginBottom: '16px' }}>
                         <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '8px', fontWeight: '600', textTransform: 'uppercase' }}>
-                          Measurements (approximate)
+                          Measurements {aiResult.measurements?.measurement_confidence && (
+                            <span style={{
+                              marginLeft: '8px',
+                              color: aiResult.measurements.measurement_confidence === 'high' ? '#4ade80' :
+                                     aiResult.measurements.measurement_confidence === 'medium' ? '#facc15' : '#f87171',
+                              fontWeight: '500'
+                            }}>
+                              ({aiResult.measurements.measurement_confidence} confidence)
+                            </span>
+                          )}
                         </div>
 
                         {(() => {
@@ -2362,7 +2968,7 @@
                           ];
 
                           return (
-                            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '10px' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(4, 1fr)', gap: '8px' }}>
                               {rows.map(r => {
                                 const v = m[r.k];
                                 const canApply = v !== null && v !== undefined && Number.isFinite(Number(v));
@@ -2375,12 +2981,13 @@
                                     display: 'flex',
                                     alignItems: 'center',
                                     justifyContent: 'space-between',
-                                    gap: '10px'
+                                    gap: '8px'
                                   }}>
                                     <div>
-                                      <div style={{ fontSize: '11px', color: '#71717a' }}>{r.label}</div>
-                                      <div style={{ fontSize: '16px', fontWeight: '600', color: '#e4e4e7', fontFamily: "'IBM Plex Mono', monospace" }}>
-                                        {canApply ? `${Math.round(Number(v))} ${r.unit}` : '-'}
+                                      <div style={{ fontSize: '10px', color: '#71717a' }}>{r.label}</div>
+                                      <div style={{ fontSize: '14px', fontWeight: '600', color: '#e4e4e7', fontFamily: "'IBM Plex Mono', monospace" }}>
+                                        {canApply ? `${Math.round(Number(v))}` : '-'}
+                                        <span style={{ fontSize: '10px', color: '#71717a', marginLeft: '2px' }}>{r.unit}</span>
                                       </div>
                                     </div>
                                     <button
@@ -2388,11 +2995,11 @@
                                       disabled={!canApply}
                                       style={{
                                         background: canApply ? '#27272a' : '#18181b',
-                                        border: '1px solid #3f3f46',
-                                        borderRadius: '6px',
-                                        padding: '8px 10px',
+                                        border: 'none',
+                                        borderRadius: '4px',
+                                        padding: '4px 8px',
                                         color: canApply ? '#e4e4e7' : '#52525b',
-                                        fontSize: '12px',
+                                        fontSize: '10px',
                                         cursor: canApply ? 'pointer' : 'not-allowed'
                                       }}
                                     >
@@ -2402,46 +3009,186 @@
                                 );
                               })}
 
-                              <div style={{
-                                background: '#1f1f23',
-                                border: '1px solid #27272a',
-                                borderRadius: '6px',
-                                padding: '10px',
-                              }}>
-                                <div style={{ fontSize: '11px', color: '#71717a' }}>QTc (Bazett)</div>
-                                <div style={{ fontSize: '16px', fontWeight: '600', color: '#e4e4e7', fontFamily: "'IBM Plex Mono', monospace" }}>
-                                  {aiResult.measurements?.qtc_bazett_ms ? `${Math.round(Number(aiResult.measurements.qtc_bazett_ms))} ms` : '-'}
+                              {/* QTc values */}
+                              <div style={{ background: '#1f1f23', border: '1px solid #27272a', borderRadius: '6px', padding: '10px' }}>
+                                <div style={{ fontSize: '10px', color: '#71717a' }}>QTc (Bazett)</div>
+                                <div style={{ fontSize: '14px', fontWeight: '600', color: '#e4e4e7', fontFamily: "'IBM Plex Mono', monospace" }}>
+                                  {m.qtc_bazett_ms ? `${Math.round(Number(m.qtc_bazett_ms))}` : '-'}
+                                  <span style={{ fontSize: '10px', color: '#71717a', marginLeft: '2px' }}>ms</span>
                                 </div>
                               </div>
-
-                              <div style={{
-                                background: '#1f1f23',
-                                border: '1px solid #27272a',
-                                borderRadius: '6px',
-                                padding: '10px',
-                              }}>
-                                <div style={{ fontSize: '11px', color: '#71717a' }}>Axis</div>
-                                <div style={{ fontSize: '16px', fontWeight: '600', color: '#e4e4e7', fontFamily: "'IBM Plex Mono', monospace" }}>
-                                  {aiResult.measurements?.axis_deg !== null && aiResult.measurements?.axis_deg !== undefined
-                                    ? `${Math.round(Number(aiResult.measurements.axis_deg))} deg`
-                                    : '-'}
+                              <div style={{ background: '#1f1f23', border: '1px solid #27272a', borderRadius: '6px', padding: '10px' }}>
+                                <div style={{ fontSize: '10px', color: '#71717a' }}>QTc (Fridericia)</div>
+                                <div style={{ fontSize: '14px', fontWeight: '600', color: '#e4e4e7', fontFamily: "'IBM Plex Mono', monospace" }}>
+                                  {m.qtc_fridericia_ms ? `${Math.round(Number(m.qtc_fridericia_ms))}` : '-'}
+                                  <span style={{ fontSize: '10px', color: '#71717a', marginLeft: '2px' }}>ms</span>
+                                </div>
+                              </div>
+                              <div style={{ background: '#1f1f23', border: '1px solid #27272a', borderRadius: '6px', padding: '10px' }}>
+                                <div style={{ fontSize: '10px', color: '#71717a' }}>QRS Axis</div>
+                                <div style={{ fontSize: '14px', fontWeight: '600', color: '#e4e4e7', fontFamily: "'IBM Plex Mono', monospace" }}>
+                                  {m.axis_deg !== null && m.axis_deg !== undefined ? `${Math.round(Number(m.axis_deg))}°` : '-'}
                                 </div>
                               </div>
                             </div>
                           );
                         })()}
+
+                        {/* Additional axes */}
+                        {(aiResult.measurements?.p_axis_deg !== null || aiResult.measurements?.t_axis_deg !== null) && (
+                          <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+                            {aiResult.measurements?.p_axis_deg !== null && (
+                              <div style={{ background: '#1f1f23', border: '1px solid #27272a', borderRadius: '6px', padding: '8px 12px', fontSize: '11px' }}>
+                                <span style={{ color: '#71717a' }}>P-axis: </span>
+                                <span style={{ color: '#e4e4e7', fontFamily: "'IBM Plex Mono', monospace" }}>{Math.round(aiResult.measurements.p_axis_deg)}°</span>
+                              </div>
+                            )}
+                            {aiResult.measurements?.t_axis_deg !== null && (
+                              <div style={{ background: '#1f1f23', border: '1px solid #27272a', borderRadius: '6px', padding: '8px 12px', fontSize: '11px' }}>
+                                <span style={{ color: '#71717a' }}>T-axis: </span>
+                                <span style={{ color: '#e4e4e7', fontFamily: "'IBM Plex Mono', monospace" }}>{Math.round(aiResult.measurements.t_axis_deg)}°</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
 
-                      <div style={{ marginBottom: '14px' }}>
+                      {/* Pattern Matches Section */}
+                      {Array.isArray(aiResult.pattern_matches) && aiResult.pattern_matches.length > 0 && (
+                        <div style={{ marginBottom: '16px' }}>
+                          <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '8px', fontWeight: '600', textTransform: 'uppercase' }}>
+                            Pattern Recognition
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            {aiResult.pattern_matches.map((p, i) => (
+                              <div key={i} style={{
+                                background: p.match_confidence >= 0.7 ? 'rgba(239, 68, 68, 0.08)' : '#1f1f23',
+                                border: `1px solid ${p.match_confidence >= 0.7 ? 'rgba(239, 68, 68, 0.25)' : '#27272a'}`,
+                                borderRadius: '6px',
+                                padding: '12px'
+                              }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                                  <div style={{ fontSize: '13px', fontWeight: '600', color: '#e4e4e7' }}>
+                                    {p.pattern_name}
+                                  </div>
+                                  <div style={{
+                                    padding: '2px 8px',
+                                    borderRadius: '10px',
+                                    fontSize: '11px',
+                                    fontWeight: '600',
+                                    background: p.match_confidence >= 0.7 ? 'rgba(239, 68, 68, 0.2)' :
+                                                p.match_confidence >= 0.4 ? 'rgba(234, 179, 8, 0.2)' : 'rgba(100, 100, 100, 0.2)',
+                                    color: p.match_confidence >= 0.7 ? '#f87171' :
+                                           p.match_confidence >= 0.4 ? '#facc15' : '#a1a1aa'
+                                  }}>
+                                    {Math.round(p.match_confidence * 100)}% match
+                                  </div>
+                                </div>
+                                {p.reference_description && (
+                                  <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '8px', fontStyle: 'italic' }}>
+                                    {p.reference_description}
+                                  </div>
+                                )}
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', fontSize: '11px' }}>
+                                  <div>
+                                    <div style={{ color: '#4ade80', marginBottom: '4px' }}>✓ Supporting:</div>
+                                    <ul style={{ paddingLeft: '16px', margin: 0, color: '#a1a1aa', lineHeight: '1.5' }}>
+                                      {(p.supporting_features || []).map((f, j) => <li key={j}>{f}</li>)}
+                                    </ul>
+                                  </div>
+                                  <div>
+                                    <div style={{ color: '#f87171', marginBottom: '4px' }}>✗ Against:</div>
+                                    <ul style={{ paddingLeft: '16px', margin: 0, color: '#a1a1aa', lineHeight: '1.5' }}>
+                                      {(p.against_features || []).length > 0
+                                        ? p.against_features.map((f, j) => <li key={j}>{f}</li>)
+                                        : <li style={{ color: '#52525b' }}>None identified</li>}
+                                    </ul>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Lead-by-Lead Analysis (Collapsible) */}
+                      {Array.isArray(aiResult.lead_analysis) && aiResult.lead_analysis.length > 0 && (
+                        <div style={{ marginBottom: '16px' }}>
+                          <details>
+                            <summary style={{
+                              fontSize: '11px', color: '#71717a', marginBottom: '8px', fontWeight: '600',
+                              textTransform: 'uppercase', cursor: 'pointer', userSelect: 'none'
+                            }}>
+                              Lead-by-Lead Analysis ({aiResult.lead_analysis.length} leads) ▾
+                            </summary>
+                            <div style={{
+                              marginTop: '8px',
+                              maxHeight: '400px',
+                              overflowY: 'auto',
+                              border: '1px solid #27272a',
+                              borderRadius: '6px'
+                            }}>
+                              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+                                <thead>
+                                  <tr style={{ background: '#1f1f23', position: 'sticky', top: 0 }}>
+                                    <th style={{ padding: '8px', textAlign: 'left', color: '#71717a', borderBottom: '1px solid #27272a' }}>Lead</th>
+                                    <th style={{ padding: '8px', textAlign: 'left', color: '#71717a', borderBottom: '1px solid #27272a' }}>P Wave</th>
+                                    <th style={{ padding: '8px', textAlign: 'left', color: '#71717a', borderBottom: '1px solid #27272a' }}>QRS</th>
+                                    <th style={{ padding: '8px', textAlign: 'left', color: '#71717a', borderBottom: '1px solid #27272a' }}>ST</th>
+                                    <th style={{ padding: '8px', textAlign: 'left', color: '#71717a', borderBottom: '1px solid #27272a' }}>T Wave</th>
+                                    <th style={{ padding: '8px', textAlign: 'left', color: '#71717a', borderBottom: '1px solid #27272a' }}>Abnormalities</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {aiResult.lead_analysis.map((lead, i) => (
+                                    <tr key={i} style={{ borderBottom: '1px solid #1f1f23' }}>
+                                      <td style={{ padding: '8px', color: '#e4e4e7', fontWeight: '600' }}>{lead.lead}</td>
+                                      <td style={{ padding: '8px', color: '#a1a1aa' }}>
+                                        {lead.p_wave?.present ? (
+                                          <span>{lead.p_wave.morphology}{lead.p_wave.amplitude_mv ? ` (${lead.p_wave.amplitude_mv}mV)` : ''}</span>
+                                        ) : 'absent'}
+                                      </td>
+                                      <td style={{ padding: '8px', color: '#a1a1aa' }}>
+                                        {lead.qrs_complex?.morphology || '-'}
+                                        {lead.qrs_complex?.r_wave_mm && <span style={{ fontSize: '10px' }}> R:{lead.qrs_complex.r_wave_mm}mm</span>}
+                                      </td>
+                                      <td style={{ padding: '8px', color: lead.st_segment?.deviation_mm > 1 ? '#f87171' : lead.st_segment?.deviation_mm < -1 ? '#facc15' : '#a1a1aa' }}>
+                                        {lead.st_segment?.deviation_mm !== null && lead.st_segment?.deviation_mm !== undefined
+                                          ? `${lead.st_segment.deviation_mm > 0 ? '+' : ''}${lead.st_segment.deviation_mm}mm`
+                                          : '-'}
+                                        {lead.st_segment?.morphology && lead.st_segment.morphology !== 'isoelectric' && (
+                                          <span style={{ fontSize: '10px' }}> ({lead.st_segment.morphology})</span>
+                                        )}
+                                      </td>
+                                      <td style={{ padding: '8px', color: lead.t_wave?.morphology === 'inverted' || lead.t_wave?.morphology === 'hyperacute' ? '#facc15' : '#a1a1aa' }}>
+                                        {lead.t_wave?.morphology || '-'}
+                                      </td>
+                                      <td style={{ padding: '8px', color: '#f87171', fontSize: '10px' }}>
+                                        {(lead.abnormalities || []).join(', ') || '-'}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </details>
+                        </div>
+                      )}
+
+                      {/* Findings Section */}
+                      <div style={{ marginBottom: '16px' }}>
                         <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '8px', fontWeight: '600', textTransform: 'uppercase' }}>
-                          Findings (select to import)
+                          Key Findings (select to import)
                         </div>
 
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                           {(aiResult.step_findings || []).map((f, idx) => {
                             const checked = !!aiSelectedFindings[idx];
                             const stepName = STEP_NAME_BY_ID[f.step_id] || f.step_id;
-                            const leads = Array.isArray(f.leads) && f.leads.length ? `Leads: ${f.leads.join(", ")}` : "Leads: -";
+                            const leads = Array.isArray(f.leads) && f.leads.length ? f.leads.join(", ") : null;
+                            const significanceColor = f.clinical_significance === 'critical' ? '#f87171' :
+                                                      f.clinical_significance === 'significant' ? '#facc15' :
+                                                      f.clinical_significance === 'minor' ? '#60a5fa' : '#71717a';
                             return (
                               <label key={idx} style={{
                                 display: 'flex',
@@ -2459,13 +3206,28 @@
                                   style={{ marginTop: '2px', accentColor: '#22c55e' }}
                                 />
                                 <div style={{ flex: 1 }}>
-                                  <div style={{ fontSize: '12px', fontWeight: '600', color: '#e4e4e7' }}>
-                                    {stepName}: {f.finding}
-                                    <span style={{ marginLeft: '8px', fontSize: '11px', color: '#a1a1aa', fontFamily: "'IBM Plex Mono', monospace" }}>
-                                      ({f.confidence})
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                    <span style={{ fontSize: '12px', fontWeight: '600', color: '#e4e4e7' }}>
+                                      {stepName}: {f.finding}
                                     </span>
+                                    <span style={{
+                                      fontSize: '10px',
+                                      padding: '1px 6px',
+                                      borderRadius: '3px',
+                                      background: f.confidence === 'high' ? 'rgba(34, 197, 94, 0.2)' :
+                                                  f.confidence === 'medium' ? 'rgba(234, 179, 8, 0.2)' : 'rgba(100, 100, 100, 0.2)',
+                                      color: f.confidence === 'high' ? '#4ade80' :
+                                             f.confidence === 'medium' ? '#facc15' : '#a1a1aa'
+                                    }}>
+                                      {f.confidence}
+                                    </span>
+                                    {f.clinical_significance && (
+                                      <span style={{ fontSize: '10px', color: significanceColor, textTransform: 'uppercase' }}>
+                                        {f.clinical_significance}
+                                      </span>
+                                    )}
                                   </div>
-                                  <div style={{ fontSize: '11px', color: '#71717a', marginTop: '3px' }}>{leads}</div>
+                                  {leads && <div style={{ fontSize: '11px', color: '#71717a', marginTop: '3px' }}>Leads: {leads}</div>}
                                   <div style={{ fontSize: '11px', color: '#a1a1aa', marginTop: '6px', lineHeight: '1.5' }}>
                                     {f.rationale}
                                   </div>
@@ -2475,7 +3237,7 @@
                           })}
                         </div>
 
-                        <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                        <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
                           <button
                             onClick={importSelectedAIFindings}
                             style={{
@@ -2492,52 +3254,129 @@
                             Import selected findings
                           </button>
                           <button
-                            onClick={() => setAiSelectedFindings(s => {
-                              const next = {};
-                              (aiResult.step_findings || []).forEach((_, i) => { next[i] = false; });
-                              return next;
-                            })}
-                            style={{
-                              background: '#27272a',
-                              border: 'none',
-                              borderRadius: '6px',
-                              padding: '10px 12px',
-                              color: '#a1a1aa',
-                              fontSize: '12px',
-                              cursor: 'pointer'
-                            }}
+                            onClick={() => setAiSelectedFindings({})}
+                            style={{ background: '#27272a', border: 'none', borderRadius: '6px', padding: '10px 12px', color: '#a1a1aa', fontSize: '12px', cursor: 'pointer' }}
                           >
                             Select none
                           </button>
                           <button
-                            onClick={() => setAiSelectedFindings(s => {
+                            onClick={() => {
                               const next = {};
                               (aiResult.step_findings || []).forEach((_, i) => { next[i] = true; });
-                              return next;
-                            })}
-                            style={{
-                              background: '#27272a',
-                              border: 'none',
-                              borderRadius: '6px',
-                              padding: '10px 12px',
-                              color: '#a1a1aa',
-                              fontSize: '12px',
-                              cursor: 'pointer'
+                              setAiSelectedFindings(next);
                             }}
+                            style={{ background: '#27272a', border: 'none', borderRadius: '6px', padding: '10px 12px', color: '#a1a1aa', fontSize: '12px', cursor: 'pointer' }}
                           >
                             Select all
                           </button>
                         </div>
                       </div>
 
-                      <div style={{ marginBottom: '12px' }}>
+                      {/* Clinical Decision Support Section */}
+                      {aiResult.clinical_decision_support && (
+                        <div style={{ marginBottom: '16px' }}>
+                          <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '8px', fontWeight: '600', textTransform: 'uppercase' }}>
+                            Clinical Decision Support
+                          </div>
+
+                          {/* Suggested Actions */}
+                          {Array.isArray(aiResult.clinical_decision_support.suggested_actions) && aiResult.clinical_decision_support.suggested_actions.length > 0 && (
+                            <div style={{ marginBottom: '12px' }}>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                {aiResult.clinical_decision_support.suggested_actions.map((a, i) => (
+                                  <div key={i} style={{
+                                    display: 'flex',
+                                    alignItems: 'flex-start',
+                                    gap: '10px',
+                                    padding: '10px',
+                                    background: a.urgency === 'emergent' ? 'rgba(239, 68, 68, 0.1)' :
+                                                a.urgency === 'urgent' ? 'rgba(234, 179, 8, 0.1)' : '#1f1f23',
+                                    border: `1px solid ${a.urgency === 'emergent' ? 'rgba(239, 68, 68, 0.3)' :
+                                                         a.urgency === 'urgent' ? 'rgba(234, 179, 8, 0.3)' : '#27272a'}`,
+                                    borderRadius: '6px'
+                                  }}>
+                                    <div style={{
+                                      padding: '2px 6px',
+                                      borderRadius: '3px',
+                                      fontSize: '10px',
+                                      fontWeight: '700',
+                                      textTransform: 'uppercase',
+                                      background: a.urgency === 'emergent' ? '#dc2626' :
+                                                  a.urgency === 'urgent' ? '#ca8a04' :
+                                                  a.urgency === 'routine' ? '#2563eb' : '#52525b',
+                                      color: 'white',
+                                      whiteSpace: 'nowrap'
+                                    }}>
+                                      {a.urgency}
+                                    </div>
+                                    <div>
+                                      <div style={{ fontSize: '12px', fontWeight: '600', color: '#e4e4e7' }}>{a.action}</div>
+                                      <div style={{ fontSize: '11px', color: '#a1a1aa', marginTop: '2px' }}>{a.rationale}</div>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Risk Scores */}
+                          {aiResult.clinical_decision_support.risk_scores && (
+                            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                              {aiResult.clinical_decision_support.risk_scores.sgarbossa_applicable && (
+                                <div style={{ background: '#1f1f23', border: '1px solid #27272a', borderRadius: '6px', padding: '8px 12px', fontSize: '11px' }}>
+                                  <span style={{ color: '#71717a' }}>Sgarbossa: </span>
+                                  <span style={{ color: '#e4e4e7', fontWeight: '600' }}>
+                                    {aiResult.clinical_decision_support.risk_scores.sgarbossa_score ?? '-'}
+                                    {aiResult.clinical_decision_support.risk_scores.smith_modified_positive && ' (Smith+)'}
+                                  </span>
+                                </div>
+                              )}
+                              {aiResult.clinical_decision_support.risk_scores.wellens_criteria_met && (
+                                <div style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '6px', padding: '8px 12px', fontSize: '11px' }}>
+                                  <span style={{ color: '#f87171', fontWeight: '600' }}>⚠ Wellens Criteria Met</span>
+                                </div>
+                              )}
+                              {aiResult.clinical_decision_support.risk_scores.de_winter_pattern && (
+                                <div style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '6px', padding: '8px 12px', fontSize: '11px' }}>
+                                  <span style={{ color: '#f87171', fontWeight: '600' }}>⚠ de Winter Pattern</span>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Guideline References */}
+                          {Array.isArray(aiResult.clinical_decision_support.guideline_references) && aiResult.clinical_decision_support.guideline_references.length > 0 && (
+                            <details style={{ marginTop: '8px' }}>
+                              <summary style={{ fontSize: '11px', color: '#71717a', cursor: 'pointer' }}>
+                                Guideline References ({aiResult.clinical_decision_support.guideline_references.length}) ▾
+                              </summary>
+                              <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                {aiResult.clinical_decision_support.guideline_references.map((g, i) => (
+                                  <div key={i} style={{ background: '#0a0a0b', border: '1px solid #1f1f23', borderRadius: '4px', padding: '8px', fontSize: '11px' }}>
+                                    <div style={{ color: '#60a5fa', fontWeight: '600' }}>{g.guideline}</div>
+                                    <div style={{ color: '#a1a1aa', marginTop: '2px' }}>
+                                      <strong>Finding:</strong> {g.finding}
+                                    </div>
+                                    <div style={{ color: '#e4e4e7', marginTop: '2px' }}>
+                                      <strong>Recommendation:</strong> {g.recommendation}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </details>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Impression and Differentials */}
+                      <div style={{ marginBottom: '16px' }}>
                         <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '8px', fontWeight: '600', textTransform: 'uppercase' }}>
-                          Impression and differentials
+                          Impression & Differentials
                         </div>
 
                         {Array.isArray(aiResult.impression) && aiResult.impression.length > 0 && (
-                          <div style={{ marginBottom: '10px', color: '#a1a1aa', fontSize: '12px', lineHeight: '1.6' }}>
-                            <ul style={{ paddingLeft: '18px' }}>
+                          <div style={{ marginBottom: '10px', padding: '10px', background: '#0a0a0b', borderRadius: '6px', border: '1px solid #27272a' }}>
+                            <ul style={{ paddingLeft: '18px', margin: 0, color: '#e4e4e7', fontSize: '12px', lineHeight: '1.6' }}>
                               {aiResult.impression.map((x, i) => <li key={i}>{x}</li>)}
                             </ul>
                           </div>
@@ -2547,39 +3386,124 @@
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                             {aiResult.differentials.map((d, i) => (
                               <div key={i} style={{
-                                background: '#1f1f23',
-                                border: '1px solid #27272a',
+                                background: d.cannot_miss ? 'rgba(239, 68, 68, 0.05)' : '#1f1f23',
+                                border: `1px solid ${d.cannot_miss ? 'rgba(239, 68, 68, 0.2)' : '#27272a'}`,
                                 borderRadius: '6px',
                                 padding: '10px'
                               }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
                                   <div style={{ fontSize: '12px', fontWeight: '700', color: '#e4e4e7' }}>
+                                    {d.cannot_miss && <span style={{ color: '#f87171', marginRight: '6px' }}>⚠</span>}
                                     {d.diagnosis}
                                   </div>
-                                  <div style={{ fontSize: '11px', color: '#a1a1aa', fontFamily: "'IBM Plex Mono', monospace" }}>
-                                    {d.likelihood}{d.cannot_miss ? " | cannot miss" : ""}
+                                  <div style={{
+                                    fontSize: '10px',
+                                    padding: '2px 8px',
+                                    borderRadius: '10px',
+                                    background: d.likelihood === 'high' ? 'rgba(239, 68, 68, 0.2)' :
+                                                d.likelihood === 'moderate' ? 'rgba(234, 179, 8, 0.2)' : 'rgba(100, 100, 100, 0.2)',
+                                    color: d.likelihood === 'high' ? '#f87171' :
+                                           d.likelihood === 'moderate' ? '#facc15' : '#a1a1aa'
+                                  }}>
+                                    {d.likelihood} likelihood
                                   </div>
                                 </div>
-                                <div style={{ marginTop: '6px', fontSize: '12px', color: '#a1a1aa', lineHeight: '1.5' }}>
+                                <div style={{ marginTop: '6px', fontSize: '11px', color: '#a1a1aa', lineHeight: '1.5' }}>
                                   {d.rationale}
                                 </div>
+                                {Array.isArray(d.workup_suggestions) && d.workup_suggestions.length > 0 && (
+                                  <div style={{ marginTop: '8px', fontSize: '11px' }}>
+                                    <span style={{ color: '#71717a' }}>Suggested workup: </span>
+                                    <span style={{ color: '#60a5fa' }}>{d.workup_suggestions.join(' • ')}</span>
+                                  </div>
+                                )}
                               </div>
                             ))}
                           </div>
                         )}
                       </div>
 
-                      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '12px' }}>
-                        <div style={{ background: '#0a0a0b', border: '1px solid #27272a', borderRadius: '6px', padding: '12px' }}>
+                      {/* Uncertainty & Recommendations Section */}
+                      {aiResult.uncertainty && (
+                        <div style={{ marginBottom: '16px' }}>
                           <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '8px', fontWeight: '600', textTransform: 'uppercase' }}>
-                            Red flags
+                            Uncertainty & Recommendations
+                          </div>
+
+                          <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '12px' }}>
+                            {/* Limiting Factors */}
+                            <div style={{ background: '#0a0a0b', border: '1px solid #27272a', borderRadius: '6px', padding: '12px' }}>
+                              <div style={{ fontSize: '10px', color: '#71717a', marginBottom: '6px', fontWeight: '600' }}>LIMITING FACTORS</div>
+                              {Array.isArray(aiResult.uncertainty.limiting_factors) && aiResult.uncertainty.limiting_factors.length > 0 ? (
+                                <ul style={{ paddingLeft: '16px', margin: 0, color: '#a1a1aa', fontSize: '11px', lineHeight: '1.5' }}>
+                                  {aiResult.uncertainty.limiting_factors.map((x, i) => <li key={i}>{x}</li>)}
+                                </ul>
+                              ) : (
+                                <div style={{ color: '#52525b', fontSize: '11px' }}>None identified</div>
+                              )}
+                            </div>
+
+                            {/* Recommended Actions */}
+                            <div style={{ background: '#0a0a0b', border: '1px solid #27272a', borderRadius: '6px', padding: '12px' }}>
+                              <div style={{ fontSize: '10px', color: '#71717a', marginBottom: '6px', fontWeight: '600' }}>RECOMMEND ADDITIONAL ECG</div>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                                {aiResult.uncertainty.recommend_actions?.repeat_ecg && (
+                                  <span style={{ background: 'rgba(59, 130, 246, 0.2)', color: '#60a5fa', padding: '3px 8px', borderRadius: '4px', fontSize: '10px' }}>Repeat ECG</span>
+                                )}
+                                {aiResult.uncertainty.recommend_actions?.get_12_lead && (
+                                  <span style={{ background: 'rgba(59, 130, 246, 0.2)', color: '#60a5fa', padding: '3px 8px', borderRadius: '4px', fontSize: '10px' }}>Full 12-Lead</span>
+                                )}
+                                {aiResult.uncertainty.recommend_actions?.get_right_sided && (
+                                  <span style={{ background: 'rgba(234, 179, 8, 0.2)', color: '#facc15', padding: '3px 8px', borderRadius: '4px', fontSize: '10px' }}>Right-Sided Leads</span>
+                                )}
+                                {aiResult.uncertainty.recommend_actions?.get_posterior && (
+                                  <span style={{ background: 'rgba(234, 179, 8, 0.2)', color: '#facc15', padding: '3px 8px', borderRadius: '4px', fontSize: '10px' }}>Posterior Leads</span>
+                                )}
+                                {aiResult.uncertainty.recommend_actions?.serial_ecgs && (
+                                  <span style={{ background: 'rgba(139, 92, 246, 0.2)', color: '#a78bfa', padding: '3px 8px', borderRadius: '4px', fontSize: '10px' }}>Serial ECGs</span>
+                                )}
+                                {aiResult.uncertainty.recommend_actions?.compare_prior && (
+                                  <span style={{ background: 'rgba(139, 92, 246, 0.2)', color: '#a78bfa', padding: '3px 8px', borderRadius: '4px', fontSize: '10px' }}>Compare to Prior</span>
+                                )}
+                                {!Object.values(aiResult.uncertainty.recommend_actions || {}).some(v => v) && (
+                                  <span style={{ color: '#52525b', fontSize: '11px' }}>No additional ECGs recommended</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Areas of Uncertainty */}
+                          {Array.isArray(aiResult.uncertainty.areas_of_uncertainty) && aiResult.uncertainty.areas_of_uncertainty.length > 0 && (
+                            <details style={{ marginTop: '10px' }}>
+                              <summary style={{ fontSize: '11px', color: '#71717a', cursor: 'pointer' }}>
+                                Specific Uncertainty Areas ({aiResult.uncertainty.areas_of_uncertainty.length}) ▾
+                              </summary>
+                              <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                {aiResult.uncertainty.areas_of_uncertainty.map((u, i) => (
+                                  <div key={i} style={{ background: '#1f1f23', border: '1px solid #27272a', borderRadius: '4px', padding: '8px', fontSize: '11px' }}>
+                                    <div style={{ color: '#e4e4e7', fontWeight: '600' }}>{u.finding}</div>
+                                    <div style={{ color: '#a1a1aa', marginTop: '2px' }}>Reason: {u.uncertainty_reason}</div>
+                                    {u.would_help && <div style={{ color: '#60a5fa', marginTop: '2px' }}>Would help: {u.would_help}</div>}
+                                  </div>
+                                ))}
+                              </div>
+                            </details>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Red Flags & Limitations */}
+                      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
+                        <div style={{ background: 'rgba(239, 68, 68, 0.05)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '6px', padding: '12px' }}>
+                          <div style={{ fontSize: '11px', color: '#f87171', marginBottom: '8px', fontWeight: '600', textTransform: 'uppercase' }}>
+                            ⚠ Red Flags
                           </div>
                           {Array.isArray(aiResult.red_flags) && aiResult.red_flags.length > 0 ? (
-                            <ul style={{ paddingLeft: '18px', color: '#a1a1aa', fontSize: '12px', lineHeight: '1.6' }}>
+                            <ul style={{ paddingLeft: '18px', margin: 0, color: '#fca5a5', fontSize: '12px', lineHeight: '1.6' }}>
                               {aiResult.red_flags.map((x, i) => <li key={i}>{x}</li>)}
                             </ul>
                           ) : (
-                            <div style={{ color: '#52525b', fontSize: '12px' }}>-</div>
+                            <div style={{ color: '#52525b', fontSize: '12px' }}>No red flags identified</div>
                           )}
                         </div>
 
@@ -2588,7 +3512,7 @@
                             Limitations
                           </div>
                           {Array.isArray(aiResult.limitations) && aiResult.limitations.length > 0 ? (
-                            <ul style={{ paddingLeft: '18px', color: '#a1a1aa', fontSize: '12px', lineHeight: '1.6' }}>
+                            <ul style={{ paddingLeft: '18px', margin: 0, color: '#a1a1aa', fontSize: '12px', lineHeight: '1.6' }}>
                               {aiResult.limitations.map((x, i) => <li key={i}>{x}</li>)}
                             </ul>
                           ) : (
@@ -2597,15 +3521,16 @@
                         </div>
                       </div>
 
+                      {/* Disclaimer */}
                       <div style={{
-                        marginTop: '12px',
                         padding: '10px',
                         background: 'rgba(245, 158, 11, 0.10)',
+                        border: '1px solid rgba(245, 158, 11, 0.2)',
                         borderRadius: '6px',
                         fontSize: '11px',
                         color: '#fcd34d',
                       }}>
-                        Second opinion only. Verify all measurements and findings. Do not upload images containing identifiers.
+                        <strong>Second opinion only.</strong> This AI analysis is intended to supplement, not replace, clinical judgment. Verify all measurements and findings independently. Do not upload images containing patient identifiers.
                       </div>
                     </div>
                   )}
