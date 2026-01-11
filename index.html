@@ -1201,6 +1201,64 @@
 
       const fileInputRef = useRef(null);
 
+      // ============================================
+      // CLINICAL INTERPRETATION STATE
+      // ============================================
+
+      // Interpreter information
+      const [interpreterInfo, setInterpreterInfo] = useState({
+        name: '',
+        role: 'attending', // attending, fellow, resident, student
+        timestamp: null
+      });
+
+      // Clinical interpretation - the cardiologist's synthesis
+      const [clinicalInterpretation, setClinicalInterpretation] = useState({
+        primaryDiagnosis: '',
+        secondaryFindings: '',
+        clinicalCorrelation: '', // Does ECG match clinical picture?
+        recommendation: '',
+        urgency: 'routine', // emergent, urgent, routine
+        confidence: 'confident', // confident, probable, uncertain
+        needsFollowUp: false,
+        followUpInterval: ''
+      });
+
+      // Machine (automated) ECG read comparison
+      const [machineRead, setMachineRead] = useState({
+        available: false,
+        interpretation: '',
+        agreeWithMachine: null, // true, false, partial
+        disagreementNotes: ''
+      });
+
+      // Prior ECG comparison
+      const [priorEcgComparison, setPriorEcgComparison] = useState({
+        hasPrior: false,
+        priorDate: '',
+        comparison: '', // new, unchanged, improved, worsened
+        specificChanges: '',
+        isAcuteChange: false
+      });
+
+      // Per-step analysis notes (free text for each step)
+      const [stepNotes, setStepNotes] = useState({});
+
+      // AI feedback - when cardiologist disagrees with AI
+      const [aiFeedback, setAiFeedback] = useState({
+        overallAccuracy: null, // accurate, partially_accurate, inaccurate
+        missedFindings: '',
+        incorrectFindings: '',
+        clinicalPearl: '' // teaching point
+      });
+
+      // Teaching/Learning notes
+      const [teachingNotes, setTeachingNotes] = useState({
+        keyLearningPoints: '',
+        differentialThinking: '',
+        pitfalls: ''
+      });
+
       // Mobile responsive state
       const [sidebarOpen, setSidebarOpen] = useState(false);
       const [isMobile, setIsMobile] = useState(false);
@@ -1550,6 +1608,14 @@ Use step_id values: rate, rhythm, axis, intervals, pwave, qrsmorph, st, twave, o
         setAiSelectedFindings({});
         setPhiConfirmed(false);
         setSendContextToAI(false);
+        // Reset clinical interpretation state
+        setInterpreterInfo({ name: '', role: 'attending', timestamp: null });
+        setClinicalInterpretation({ primaryDiagnosis: '', secondaryFindings: '', clinicalCorrelation: '', recommendation: '', urgency: 'routine', confidence: 'confident', needsFollowUp: false, followUpInterval: '' });
+        setMachineRead({ available: false, interpretation: '', agreeWithMachine: null, disagreementNotes: '' });
+        setPriorEcgComparison({ hasPrior: false, priorDate: '', comparison: '', specificChanges: '', isAcuteChange: false });
+        setStepNotes({});
+        setAiFeedback({ overallAccuracy: null, missedFindings: '', incorrectFindings: '', clinicalPearl: '' });
+        setTeachingNotes({ keyLearningPoints: '', differentialThinking: '', pitfalls: '' });
       }, []);
 
       // ============================================
@@ -1761,6 +1827,7 @@ Use step_id values: rate, rhythm, axis, intervals, pwave, qrsmorph, st, twave, o
             overflowX: isMobile ? 'auto' : 'visible',
           }}>
             <TabButton id="analysis" label={isMobile ? "Analyze" : "Analysis"} icon="◎" />
+            <TabButton id="interpretation" label={isMobile ? "Interp" : "Interpretation"} icon="✎" badge={clinicalInterpretation.primaryDiagnosis ? 1 : 0} />
             <TabButton id="calculators" label={isMobile ? "Calc" : "Calculators"} icon="⚙" />
             <TabButton id="criteria" label="Criteria" icon="☰" />
             <TabButton id="drugs" label={isMobile ? "QT" : "QT Drugs"} icon="⚠" />
@@ -2348,7 +2415,509 @@ Use step_id values: rate, rhythm, axis, intervals, pwave, qrsmorph, st, twave, o
                   )}
                 </div>
               )}
-              
+
+              {/* INTERPRETATION TAB - Clinical Feedback & Final Interpretation */}
+              {activeTab === 'interpretation' && (
+                <div className="animate-fade">
+                  {/* Interpreter Information */}
+                  <div style={{
+                    background: '#111113',
+                    border: '1px solid #27272a',
+                    borderRadius: '8px',
+                    padding: '16px',
+                    marginBottom: '16px',
+                  }}>
+                    <h3 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px', color: '#e4e4e7' }}>
+                      Interpreter Information
+                    </h3>
+                    <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: '12px' }}>
+                      <div>
+                        <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '4px', textTransform: 'uppercase' }}>Name</label>
+                        <input
+                          type="text"
+                          value={interpreterInfo.name}
+                          onChange={(e) => setInterpreterInfo(s => ({ ...s, name: e.target.value }))}
+                          placeholder="Dr. Smith"
+                          style={{ width: '100%', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '10px', color: '#fff', fontSize: '13px' }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '4px', textTransform: 'uppercase' }}>Role</label>
+                        <select
+                          value={interpreterInfo.role}
+                          onChange={(e) => setInterpreterInfo(s => ({ ...s, role: e.target.value }))}
+                          style={{ width: '100%', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '10px', color: '#fff', fontSize: '13px' }}
+                        >
+                          <option value="attending">Attending Physician</option>
+                          <option value="fellow">Fellow</option>
+                          <option value="resident">Resident</option>
+                          <option value="student">Medical Student</option>
+                          <option value="np_pa">NP/PA</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '4px', textTransform: 'uppercase' }}>Timestamp</label>
+                        <button
+                          onClick={() => setInterpreterInfo(s => ({ ...s, timestamp: new Date().toISOString() }))}
+                          style={{
+                            width: '100%',
+                            background: interpreterInfo.timestamp ? '#166534' : '#27272a',
+                            border: 'none',
+                            borderRadius: '6px',
+                            padding: '10px',
+                            color: '#fff',
+                            fontSize: '12px',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          {interpreterInfo.timestamp ? new Date(interpreterInfo.timestamp).toLocaleString() : 'Click to Timestamp'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Prior ECG Comparison */}
+                  <div style={{
+                    background: '#111113',
+                    border: '1px solid #27272a',
+                    borderRadius: '8px',
+                    padding: '16px',
+                    marginBottom: '16px',
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                      <h3 style={{ fontSize: '14px', fontWeight: '600', color: '#e4e4e7', margin: 0 }}>
+                        Prior ECG Comparison
+                      </h3>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={priorEcgComparison.hasPrior}
+                          onChange={(e) => setPriorEcgComparison(s => ({ ...s, hasPrior: e.target.checked }))}
+                          style={{ accentColor: '#22c55e' }}
+                        />
+                        <span style={{ fontSize: '12px', color: '#a1a1aa' }}>Prior ECG available</span>
+                      </label>
+                    </div>
+
+                    {priorEcgComparison.hasPrior && (
+                      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '12px' }}>
+                        <div>
+                          <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '4px', textTransform: 'uppercase' }}>Prior ECG Date</label>
+                          <input
+                            type="text"
+                            value={priorEcgComparison.priorDate}
+                            onChange={(e) => setPriorEcgComparison(s => ({ ...s, priorDate: e.target.value }))}
+                            placeholder="e.g., 3 months ago, 01/15/2024"
+                            style={{ width: '100%', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '10px', color: '#fff', fontSize: '13px' }}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '4px', textTransform: 'uppercase' }}>Comparison</label>
+                          <select
+                            value={priorEcgComparison.comparison}
+                            onChange={(e) => setPriorEcgComparison(s => ({ ...s, comparison: e.target.value }))}
+                            style={{ width: '100%', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '10px', color: '#fff', fontSize: '13px' }}
+                          >
+                            <option value="">Select comparison...</option>
+                            <option value="new">New findings (not on prior)</option>
+                            <option value="unchanged">Unchanged from prior</option>
+                            <option value="improved">Improved from prior</option>
+                            <option value="worsened">Worsened from prior</option>
+                            <option value="mixed">Mixed (some better, some worse)</option>
+                          </select>
+                        </div>
+                        <div style={{ gridColumn: isMobile ? '1' : '1 / -1' }}>
+                          <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '4px', textTransform: 'uppercase' }}>Specific Changes</label>
+                          <textarea
+                            value={priorEcgComparison.specificChanges}
+                            onChange={(e) => setPriorEcgComparison(s => ({ ...s, specificChanges: e.target.value }))}
+                            placeholder="e.g., New ST elevation in V2-V4 not present on prior. Previous TWI in lateral leads resolved."
+                            style={{ width: '100%', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '10px', color: '#fff', fontSize: '12px', height: '60px', resize: 'none' }}
+                          />
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <input
+                            type="checkbox"
+                            checked={priorEcgComparison.isAcuteChange}
+                            onChange={(e) => setPriorEcgComparison(s => ({ ...s, isAcuteChange: e.target.checked }))}
+                            style={{ accentColor: '#ef4444' }}
+                          />
+                          <span style={{ fontSize: '12px', color: priorEcgComparison.isAcuteChange ? '#f87171' : '#a1a1aa', fontWeight: priorEcgComparison.isAcuteChange ? '600' : '400' }}>
+                            ⚠ Acute/new change requiring immediate attention
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Machine Read Comparison */}
+                  <div style={{
+                    background: '#111113',
+                    border: '1px solid #27272a',
+                    borderRadius: '8px',
+                    padding: '16px',
+                    marginBottom: '16px',
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                      <h3 style={{ fontSize: '14px', fontWeight: '600', color: '#e4e4e7', margin: 0 }}>
+                        Machine (Automated) Read
+                      </h3>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={machineRead.available}
+                          onChange={(e) => setMachineRead(s => ({ ...s, available: e.target.checked }))}
+                          style={{ accentColor: '#22c55e' }}
+                        />
+                        <span style={{ fontSize: '12px', color: '#a1a1aa' }}>Machine read available</span>
+                      </label>
+                    </div>
+
+                    {machineRead.available && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                        <div>
+                          <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '4px', textTransform: 'uppercase' }}>Machine Interpretation</label>
+                          <textarea
+                            value={machineRead.interpretation}
+                            onChange={(e) => setMachineRead(s => ({ ...s, interpretation: e.target.value }))}
+                            placeholder="Paste machine/automated ECG interpretation here..."
+                            style={{ width: '100%', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '10px', color: '#fff', fontSize: '12px', height: '60px', resize: 'none', fontFamily: "'IBM Plex Mono', monospace" }}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '8px', textTransform: 'uppercase' }}>Agreement with Machine</label>
+                          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                            {[
+                              { value: true, label: 'Agree', color: '#22c55e' },
+                              { value: 'partial', label: 'Partially Agree', color: '#f59e0b' },
+                              { value: false, label: 'Disagree', color: '#ef4444' }
+                            ].map(opt => (
+                              <button
+                                key={String(opt.value)}
+                                onClick={() => setMachineRead(s => ({ ...s, agreeWithMachine: opt.value }))}
+                                style={{
+                                  background: machineRead.agreeWithMachine === opt.value ? opt.color : '#27272a',
+                                  border: 'none',
+                                  borderRadius: '6px',
+                                  padding: '8px 16px',
+                                  color: '#fff',
+                                  fontSize: '12px',
+                                  cursor: 'pointer',
+                                  fontWeight: machineRead.agreeWithMachine === opt.value ? '600' : '400'
+                                }}
+                              >
+                                {opt.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        {(machineRead.agreeWithMachine === false || machineRead.agreeWithMachine === 'partial') && (
+                          <div>
+                            <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '4px', textTransform: 'uppercase' }}>Disagreement Notes</label>
+                            <textarea
+                              value={machineRead.disagreementNotes}
+                              onChange={(e) => setMachineRead(s => ({ ...s, disagreementNotes: e.target.value }))}
+                              placeholder="What did the machine miss or get wrong? e.g., Machine read 'normal ECG' - missed subtle ST depression in V5-V6"
+                              style={{ width: '100%', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '10px', color: '#fff', fontSize: '12px', height: '60px', resize: 'none' }}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Primary Clinical Interpretation */}
+                  <div style={{
+                    background: '#111113',
+                    border: '1px solid #3b82f6',
+                    borderRadius: '8px',
+                    padding: '16px',
+                    marginBottom: '16px',
+                  }}>
+                    <h3 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px', color: '#60a5fa' }}>
+                      Clinical Interpretation
+                    </h3>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                      {/* Urgency & Confidence Row */}
+                      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '12px' }}>
+                        <div>
+                          <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '6px', textTransform: 'uppercase' }}>Urgency</label>
+                          <div style={{ display: 'flex', gap: '6px' }}>
+                            {[
+                              { value: 'emergent', label: 'EMERGENT', color: '#dc2626' },
+                              { value: 'urgent', label: 'URGENT', color: '#f59e0b' },
+                              { value: 'routine', label: 'ROUTINE', color: '#22c55e' }
+                            ].map(opt => (
+                              <button
+                                key={opt.value}
+                                onClick={() => setClinicalInterpretation(s => ({ ...s, urgency: opt.value }))}
+                                style={{
+                                  flex: 1,
+                                  background: clinicalInterpretation.urgency === opt.value ? opt.color : '#27272a',
+                                  border: 'none',
+                                  borderRadius: '6px',
+                                  padding: '8px',
+                                  color: '#fff',
+                                  fontSize: '10px',
+                                  fontWeight: '700',
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                {opt.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '6px', textTransform: 'uppercase' }}>Confidence</label>
+                          <div style={{ display: 'flex', gap: '6px' }}>
+                            {[
+                              { value: 'confident', label: 'Confident', color: '#22c55e' },
+                              { value: 'probable', label: 'Probable', color: '#3b82f6' },
+                              { value: 'uncertain', label: 'Uncertain', color: '#f59e0b' }
+                            ].map(opt => (
+                              <button
+                                key={opt.value}
+                                onClick={() => setClinicalInterpretation(s => ({ ...s, confidence: opt.value }))}
+                                style={{
+                                  flex: 1,
+                                  background: clinicalInterpretation.confidence === opt.value ? opt.color : '#27272a',
+                                  border: 'none',
+                                  borderRadius: '6px',
+                                  padding: '8px',
+                                  color: '#fff',
+                                  fontSize: '11px',
+                                  fontWeight: '600',
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                {opt.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Primary Diagnosis */}
+                      <div>
+                        <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '4px', textTransform: 'uppercase' }}>Primary Diagnosis / Impression</label>
+                        <textarea
+                          value={clinicalInterpretation.primaryDiagnosis}
+                          onChange={(e) => setClinicalInterpretation(s => ({ ...s, primaryDiagnosis: e.target.value }))}
+                          placeholder="e.g., Acute anterior STEMI with proximal LAD occlusion; Atrial fibrillation with RVR"
+                          style={{ width: '100%', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '12px', color: '#fff', fontSize: '14px', height: '70px', resize: 'none', fontWeight: '500' }}
+                        />
+                      </div>
+
+                      {/* Secondary Findings */}
+                      <div>
+                        <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '4px', textTransform: 'uppercase' }}>Secondary Findings</label>
+                        <textarea
+                          value={clinicalInterpretation.secondaryFindings}
+                          onChange={(e) => setClinicalInterpretation(s => ({ ...s, secondaryFindings: e.target.value }))}
+                          placeholder="e.g., LVH by voltage criteria; Old inferior infarct; First-degree AV block"
+                          style={{ width: '100%', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '10px', color: '#fff', fontSize: '12px', height: '50px', resize: 'none' }}
+                        />
+                      </div>
+
+                      {/* Clinical Correlation */}
+                      <div>
+                        <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '4px', textTransform: 'uppercase' }}>Clinical Correlation</label>
+                        <textarea
+                          value={clinicalInterpretation.clinicalCorrelation}
+                          onChange={(e) => setClinicalInterpretation(s => ({ ...s, clinicalCorrelation: e.target.value }))}
+                          placeholder="Does ECG correlate with clinical presentation? e.g., ECG findings consistent with patient's chest pain and diaphoresis. Changes concerning for acute coronary syndrome."
+                          style={{ width: '100%', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '10px', color: '#fff', fontSize: '12px', height: '50px', resize: 'none' }}
+                        />
+                      </div>
+
+                      {/* Recommendation */}
+                      <div>
+                        <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '4px', textTransform: 'uppercase' }}>Recommendation / Action</label>
+                        <textarea
+                          value={clinicalInterpretation.recommendation}
+                          onChange={(e) => setClinicalInterpretation(s => ({ ...s, recommendation: e.target.value }))}
+                          placeholder="e.g., Activate cath lab STEMI protocol; Start heparin drip; Repeat ECG in 15 minutes; Cardiology consult requested"
+                          style={{ width: '100%', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '10px', color: '#fff', fontSize: '12px', height: '50px', resize: 'none' }}
+                        />
+                      </div>
+
+                      {/* Follow-up */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={clinicalInterpretation.needsFollowUp}
+                            onChange={(e) => setClinicalInterpretation(s => ({ ...s, needsFollowUp: e.target.checked }))}
+                            style={{ accentColor: '#22c55e' }}
+                          />
+                          <span style={{ fontSize: '12px', color: '#a1a1aa' }}>Needs follow-up ECG</span>
+                        </label>
+                        {clinicalInterpretation.needsFollowUp && (
+                          <input
+                            type="text"
+                            value={clinicalInterpretation.followUpInterval}
+                            onChange={(e) => setClinicalInterpretation(s => ({ ...s, followUpInterval: e.target.value }))}
+                            placeholder="e.g., 15 min, 1 hour, daily"
+                            style={{ background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '8px 12px', color: '#fff', fontSize: '12px', width: '150px' }}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* AI Feedback Section (only show if AI was used) */}
+                  {aiResult && (
+                    <div style={{
+                      background: '#111113',
+                      border: '1px solid #8b5cf6',
+                      borderRadius: '8px',
+                      padding: '16px',
+                      marginBottom: '16px',
+                    }}>
+                      <h3 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px', color: '#a78bfa' }}>
+                        AI Feedback (Training & Quality)
+                      </h3>
+                      <p style={{ fontSize: '11px', color: '#71717a', marginBottom: '12px' }}>
+                        Your feedback helps improve AI accuracy and creates an audit trail.
+                      </p>
+
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                        <div>
+                          <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '6px', textTransform: 'uppercase' }}>AI Overall Accuracy</label>
+                          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                            {[
+                              { value: 'accurate', label: 'Accurate', color: '#22c55e' },
+                              { value: 'partially_accurate', label: 'Partially Accurate', color: '#f59e0b' },
+                              { value: 'inaccurate', label: 'Inaccurate', color: '#ef4444' }
+                            ].map(opt => (
+                              <button
+                                key={opt.value}
+                                onClick={() => setAiFeedback(s => ({ ...s, overallAccuracy: opt.value }))}
+                                style={{
+                                  background: aiFeedback.overallAccuracy === opt.value ? opt.color : '#27272a',
+                                  border: 'none',
+                                  borderRadius: '6px',
+                                  padding: '8px 16px',
+                                  color: '#fff',
+                                  fontSize: '12px',
+                                  cursor: 'pointer',
+                                  fontWeight: aiFeedback.overallAccuracy === opt.value ? '600' : '400'
+                                }}
+                              >
+                                {opt.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {aiFeedback.overallAccuracy && aiFeedback.overallAccuracy !== 'accurate' && (
+                          <>
+                            <div>
+                              <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '4px', textTransform: 'uppercase' }}>What did AI miss?</label>
+                              <textarea
+                                value={aiFeedback.missedFindings}
+                                onChange={(e) => setAiFeedback(s => ({ ...s, missedFindings: e.target.value }))}
+                                placeholder="e.g., Missed subtle ST depression in aVL; Failed to recognize Wellens pattern"
+                                style={{ width: '100%', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '10px', color: '#fff', fontSize: '12px', height: '50px', resize: 'none' }}
+                              />
+                            </div>
+                            <div>
+                              <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '4px', textTransform: 'uppercase' }}>What did AI get wrong?</label>
+                              <textarea
+                                value={aiFeedback.incorrectFindings}
+                                onChange={(e) => setAiFeedback(s => ({ ...s, incorrectFindings: e.target.value }))}
+                                placeholder="e.g., Called normal when STEMI present; Overcalled LVH"
+                                style={{ width: '100%', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '10px', color: '#fff', fontSize: '12px', height: '50px', resize: 'none' }}
+                              />
+                            </div>
+                          </>
+                        )}
+
+                        <div>
+                          <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '4px', textTransform: 'uppercase' }}>Clinical Pearl / Teaching Point</label>
+                          <textarea
+                            value={aiFeedback.clinicalPearl}
+                            onChange={(e) => setAiFeedback(s => ({ ...s, clinicalPearl: e.target.value }))}
+                            placeholder="What's the key learning from this case? e.g., In LBBB, always apply Sgarbossa criteria - don't assume chest pain is ischemic just because of LBBB"
+                            style={{ width: '100%', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '10px', color: '#fff', fontSize: '12px', height: '60px', resize: 'none' }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Teaching Notes */}
+                  <details style={{
+                    background: '#111113',
+                    border: '1px solid #27272a',
+                    borderRadius: '8px',
+                    marginBottom: '16px',
+                  }}>
+                    <summary style={{ padding: '16px', cursor: 'pointer', fontSize: '14px', fontWeight: '600', color: '#e4e4e7' }}>
+                      Teaching & Learning Notes (Optional) ▾
+                    </summary>
+                    <div style={{ padding: '0 16px 16px 16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      <div>
+                        <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '4px', textTransform: 'uppercase' }}>Key Learning Points</label>
+                        <textarea
+                          value={teachingNotes.keyLearningPoints}
+                          onChange={(e) => setTeachingNotes(s => ({ ...s, keyLearningPoints: e.target.value }))}
+                          placeholder="What should a trainee learn from this ECG?"
+                          style={{ width: '100%', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '10px', color: '#fff', fontSize: '12px', height: '50px', resize: 'none' }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '4px', textTransform: 'uppercase' }}>Differential Thinking Process</label>
+                        <textarea
+                          value={teachingNotes.differentialThinking}
+                          onChange={(e) => setTeachingNotes(s => ({ ...s, differentialThinking: e.target.value }))}
+                          placeholder="How did you arrive at the diagnosis? What other diagnoses did you consider?"
+                          style={{ width: '100%', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '10px', color: '#fff', fontSize: '12px', height: '50px', resize: 'none' }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: '10px', color: '#71717a', display: 'block', marginBottom: '4px', textTransform: 'uppercase' }}>Pitfalls / Common Mistakes</label>
+                        <textarea
+                          value={teachingNotes.pitfalls}
+                          onChange={(e) => setTeachingNotes(s => ({ ...s, pitfalls: e.target.value }))}
+                          placeholder="What mistakes are commonly made with this pattern?"
+                          style={{ width: '100%', background: '#18181b', border: '1px solid #27272a', borderRadius: '6px', padding: '10px', color: '#fff', fontSize: '12px', height: '50px', resize: 'none' }}
+                        />
+                      </div>
+                    </div>
+                  </details>
+
+                  {/* Summary Box */}
+                  {clinicalInterpretation.primaryDiagnosis && (
+                    <div style={{
+                      background: clinicalInterpretation.urgency === 'emergent' ? 'rgba(220, 38, 38, 0.1)' :
+                                  clinicalInterpretation.urgency === 'urgent' ? 'rgba(245, 158, 11, 0.1)' : 'rgba(34, 197, 94, 0.1)',
+                      border: `2px solid ${clinicalInterpretation.urgency === 'emergent' ? '#dc2626' :
+                                           clinicalInterpretation.urgency === 'urgent' ? '#f59e0b' : '#22c55e'}`,
+                      borderRadius: '8px',
+                      padding: '16px',
+                    }}>
+                      <div style={{ fontSize: '10px', color: '#71717a', marginBottom: '4px', textTransform: 'uppercase' }}>Final Interpretation</div>
+                      <div style={{ fontSize: '16px', fontWeight: '600', color: '#e4e4e7', marginBottom: '8px' }}>
+                        {clinicalInterpretation.primaryDiagnosis}
+                      </div>
+                      {clinicalInterpretation.recommendation && (
+                        <div style={{ fontSize: '12px', color: '#a1a1aa' }}>
+                          <strong>Action:</strong> {clinicalInterpretation.recommendation}
+                        </div>
+                      )}
+                      {interpreterInfo.name && interpreterInfo.timestamp && (
+                        <div style={{ fontSize: '10px', color: '#52525b', marginTop: '8px' }}>
+                          — {interpreterInfo.name} ({interpreterInfo.role}) • {new Date(interpreterInfo.timestamp).toLocaleString()}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* CALCULATORS TAB */}
               {activeTab === 'calculators' && (
                 <div className="animate-fade">
