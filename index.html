@@ -354,6 +354,95 @@
       }
     ];
 
+    // Step name lookup for AI findings
+    const STEP_NAME_BY_ID = ANALYSIS_FRAMEWORK.reduce((acc, step) => {
+      acc[step.id] = step.name;
+      return acc;
+    }, {});
+
+    // AI Model Options (structured outputs require 4.5 models)
+    const AI_MODEL_DEFAULT = "claude-sonnet-4-5-20250929";
+    const AI_MODEL_OPTIONS = [
+      { id: "claude-sonnet-4-5-20250929", label: "Claude Sonnet 4.5 (balanced)" },
+      { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5 (fast)" },
+      { id: "claude-opus-4-5-20251101", label: "Claude Opus 4.5 (max quality)" },
+    ];
+
+    // Second-opinion JSON schema (Structured Outputs beta)
+    const AI_SECOND_OPINION_SCHEMA = {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "image_quality",
+        "measurements",
+        "step_findings",
+        "impression",
+        "differentials",
+        "red_flags",
+        "limitations"
+      ],
+      properties: {
+        image_quality: {
+          type: "object",
+          additionalProperties: false,
+          required: ["overall", "issues"],
+          properties: {
+            overall: { type: "string", enum: ["excellent", "good", "limited", "uninterpretable"] },
+            issues: { type: "array", items: { type: "string" } }
+          }
+        },
+        measurements: {
+          type: "object",
+          additionalProperties: false,
+          required: ["rate_bpm", "rr_ms", "pr_ms", "qrs_ms", "qt_ms", "qtc_bazett_ms", "axis_deg"],
+          properties: {
+            rate_bpm: { type: ["number", "null"] },
+            rr_ms: { type: ["number", "null"] },
+            pr_ms: { type: ["number", "null"] },
+            qrs_ms: { type: ["number", "null"] },
+            qt_ms: { type: ["number", "null"] },
+            qtc_bazett_ms: { type: ["number", "null"] },
+            axis_deg: { type: ["number", "null"] }
+          }
+        },
+        step_findings: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["step_id", "finding", "leads", "confidence", "rationale"],
+            properties: {
+              step_id: {
+                type: "string",
+                enum: ["rate", "rhythm", "axis", "intervals", "pwave", "qrsmorph", "st", "twave", "other"]
+              },
+              finding: { type: "string" },
+              leads: { type: "array", items: { type: "string" } },
+              confidence: { type: "string", enum: ["high", "medium", "low"] },
+              rationale: { type: "string" }
+            }
+          }
+        },
+        impression: { type: "array", items: { type: "string" } },
+        differentials: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["diagnosis", "likelihood", "rationale", "cannot_miss"],
+            properties: {
+              diagnosis: { type: "string" },
+              likelihood: { type: "string", enum: ["high", "moderate", "low"] },
+              rationale: { type: "string" },
+              cannot_miss: { type: "boolean" }
+            }
+          }
+        },
+        red_flags: { type: "array", items: { type: "string" } },
+        limitations: { type: "array", items: { type: "string" } }
+      }
+    };
+
     // ============================================
     // UTILITY FUNCTIONS
     // ============================================
@@ -648,14 +737,26 @@
         elderly: false, drugs: false, alcohol: false
       });
       
-      // Image analysis state
+      // Image analysis state (second opinion only)
       const [ecgImage, setEcgImage] = useState(null);
       const [imagePreview, setImagePreview] = useState(null);
-      const [aiAnalysis, setAiAnalysis] = useState(null);
+
+      const [apiKey, setApiKey] = useState("");
+
+      const [aiModel, setAiModel] = useState(AI_MODEL_DEFAULT);
+      const [useStructuredOutputs, setUseStructuredOutputs] = useState(true);
+
+      const [phiConfirmed, setPhiConfirmed] = useState(false);
+      const [sendContextToAI, setSendContextToAI] = useState(false);
+
+      const [aiResult, setAiResult] = useState(null);      // parsed JSON (preferred)
+      const [aiRawText, setAiRawText] = useState(null);    // raw text fallback / raw JSON string
+      const [aiError, setAiError] = useState(null);
+
+      const [aiSelectedFindings, setAiSelectedFindings] = useState({});
+
       const [isAnalyzing, setIsAnalyzing] = useState(false);
-      const [apiKey, setApiKey] = useState('');
-      const [showApiInput, setShowApiInput] = useState(false);
-      
+
       const fileInputRef = useRef(null);
 
       // Mobile responsive state
@@ -725,78 +826,167 @@
           const reader = new FileReader();
           reader.onload = (e) => setImagePreview(e.target.result);
           reader.readAsDataURL(file);
-          setAiAnalysis(null);
+          setAiResult(null);
+          setAiRawText(null);
+          setAiError(null);
+          setAiSelectedFindings({});
         }
       }, []);
       
+      // Apply a single AI measurement to parameters
+      const applyAIParam = useCallback((paramKey, value) => {
+        if (value === null || value === undefined) return;
+        const n = Number(value);
+        if (!Number.isFinite(n)) return;
+        setParameters(p => ({ ...p, [paramKey]: String(Math.round(n)) }));
+      }, []);
+
+      // Import selected AI findings into the findings list
+      const importSelectedAIFindings = useCallback(() => {
+        if (!aiResult?.step_findings?.length) return;
+
+        const toImport = aiResult.step_findings
+          .map((item, idx) => ({ item, idx }))
+          .filter(({ idx }) => !!aiSelectedFindings[idx]);
+
+        if (!toImport.length) return;
+
+        const newTexts = toImport.map(({ item }) => {
+          const stepName = STEP_NAME_BY_ID[item.step_id] || "Other Findings";
+          const leads = Array.isArray(item.leads) && item.leads.length ? ` (leads: ${item.leads.join(", ")})` : "";
+          const conf = item.confidence ? ` [AI ${item.confidence}]` : " [AI]";
+          return `${stepName}: ${item.finding}${leads}${conf}`;
+        });
+
+        setFindings(prev => {
+          const s = new Set(prev);
+          newTexts.forEach(t => s.add(t));
+          return Array.from(s);
+        });
+      }, [aiResult, aiSelectedFindings]);
+
+      // AI Second Opinion analysis with structured outputs
       const analyzeWithAI = useCallback(async () => {
-        if (!ecgImage || !apiKey) {
-          setShowApiInput(true);
+        setAiError(null);
+        setAiResult(null);
+        setAiRawText(null);
+        setAiSelectedFindings({});
+
+        if (!ecgImage || !imagePreview) {
+          setAiError("No image loaded.");
           return;
         }
-        
-        setIsAnalyzing(true);
-        setAiAnalysis(null);
-        
-        try {
-          const base64 = imagePreview.split(',')[1];
-          const mediaType = ecgImage.type || 'image/jpeg';
-          
-          const response = await fetch('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-api-key': apiKey,
-              'anthropic-version': '2023-06-01',
-              'anthropic-dangerous-direct-browser-access': 'true'
-            },
-            body: JSON.stringify({
-              model: 'claude-sonnet-4-20250514',
-              max_tokens: 2000,
-              messages: [{
-                role: 'user',
-                content: [
-                  {
-                    type: 'image',
-                    source: { type: 'base64', media_type: mediaType, data: base64 }
-                  },
-                  {
-                    type: 'text',
-                    text: `You are an expert cardiologist analyzing this 12-lead ECG. Provide a systematic interpretation:
+        if (!apiKey) {
+          setAiError("Missing Anthropic API key.");
+          return;
+        }
+        if (!phiConfirmed) {
+          setAiError("Confirm that the image contains no patient identifiers before sending.");
+          return;
+        }
 
-1. RATE & RHYTHM: Calculate rate, identify rhythm
-2. AXIS: Estimate QRS axis
-3. INTERVALS: PR, QRS, QT assessment
-4. P WAVES: Morphology, presence
-5. QRS COMPLEX: Morphology, pathological Q waves, voltage criteria
-6. ST SEGMENTS: Any elevation or depression, which leads
-7. T WAVES: Inversions, peaked, hyperacute
-8. OVERALL IMPRESSION: List key findings
-9. DIFFERENTIAL DIAGNOSES: Most likely diagnoses based on findings
-10. RECOMMENDED ACTIONS: Clinical next steps
+        const base64 = imagePreview.split(",")[1];
+        const mediaType = ecgImage.type || "image/jpeg";
 
-${patientContext ? `Clinical context: ${patientContext}` : ''}
+        const prompt = [
+          "You are providing a second-opinion ECG interpretation for a clinician.",
+          "Do not provide medication dosing. Avoid definitive claims when uncertain.",
+          "If a numeric measurement is not readable, return null and explain in limitations.",
+          "",
+          "Use these framework steps for step_findings.step_id:",
+          "- rate",
+          "- rhythm",
+          "- axis",
+          "- intervals",
+          "- pwave",
+          "- qrsmorph",
+          "- st",
+          "- twave",
+          "- other",
+          "",
+          "Return key findings with lead localization when possible.",
+          "Populate red_flags with cannot-miss patterns to consider, and limitations with uncertainty sources.",
+          sendContextToAI && patientContext ? "" : "Clinical context not provided.",
+          sendContextToAI && patientContext ? `Clinical context: ${patientContext}` : ""
+        ].filter(Boolean).join("\n");
 
-Be specific about lead locations. If image quality limits interpretation, note this.`
-                  }
-                ]
-              }]
-            })
-          });
-          
-          const data = await response.json();
-          if (data.content?.[0]?.text) {
-            setAiAnalysis(data.content[0].text);
-          } else if (data.error) {
-            setAiAnalysis(`Error: ${data.error.message}`);
+        const sendRequest = async (structured) => {
+          const headers = {
+            "Content-Type": "application/json",
+            "x-api-key": apiKey,
+            "anthropic-version": "2023-06-01",
+            "anthropic-dangerous-direct-browser-access": "true"
+          };
+
+          const body = {
+            model: aiModel,
+            max_tokens: 2000,
+            messages: [{
+              role: "user",
+              content: [
+                { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
+                { type: "text", text: prompt }
+              ]
+            }]
+          };
+
+          if (structured) {
+            headers["anthropic-beta"] = "structured-outputs-2025-11-13";
+            body.output_format = { type: "json_schema", schema: AI_SECOND_OPINION_SCHEMA };
           }
+
+          const resp = await fetch("https://api.anthropic.com/v1/messages", {
+            method: "POST",
+            headers,
+            body: JSON.stringify(body)
+          });
+
+          const data = await resp.json();
+          if (!resp.ok) {
+            const msg = data?.error?.message || `Request failed (${resp.status})`;
+            throw new Error(msg);
+          }
+
+          const text = data?.content?.[0]?.text;
+          if (!text) throw new Error("Empty response from model.");
+          return text;
+        };
+
+        setIsAnalyzing(true);
+        try {
+          let text = null;
+
+          // Try structured first (recommended), fall back to free text if needed
+          if (useStructuredOutputs) {
+            try {
+              text = await sendRequest(true);
+              const parsed = JSON.parse(text);
+              setAiResult(parsed);
+              setAiRawText(text);
+
+              const sel = {};
+              (parsed.step_findings || []).forEach((_, idx) => { sel[idx] = true; });
+              setAiSelectedFindings(sel);
+              return;
+            } catch (err) {
+              // fall through to unstructured attempt
+            }
+          }
+
+          text = await sendRequest(false);
+          setAiRawText(text);
+          setAiResult(null);
+          setAiError(useStructuredOutputs
+            ? "Structured output unavailable; showing free-text output."
+            : null
+          );
         } catch (error) {
-          setAiAnalysis(`Analysis failed: ${error.message}`);
+          setAiError(error?.message || "AI analysis failed.");
         } finally {
           setIsAnalyzing(false);
         }
-      }, [ecgImage, imagePreview, apiKey, patientContext]);
-      
+      }, [ecgImage, imagePreview, apiKey, phiConfirmed, sendContextToAI, patientContext, aiModel, useStructuredOutputs]);
+
       const generateReport = useCallback(() => {
         const lines = [
           '══════════════════════════════════════════════════════════════',
@@ -843,7 +1033,12 @@ Be specific about lead locations. If image quality limits interpretation, note t
         setHasbled({ hypertension: false, renalDisease: false, liverDisease: false, strokeHistory: false, bleedingHistory: false, labileINR: false, elderly: false, drugs: false, alcohol: false });
         setEcgImage(null);
         setImagePreview(null);
-        setAiAnalysis(null);
+        setAiResult(null);
+        setAiRawText(null);
+        setAiError(null);
+        setAiSelectedFindings({});
+        setPhiConfirmed(false);
+        setSendContextToAI(false);
       }, []);
 
       // ============================================
@@ -1958,17 +2153,60 @@ Be specific about lead locations. If image quality limits interpretation, note t
                     padding: '20px',
                     marginBottom: '16px',
                   }}>
-                    <h3 style={{ fontSize: '16px', fontWeight: '600', marginBottom: '4px' }}>
-                      ✦ AI-Powered ECG Analysis
+                    <h3 style={{ fontSize: '16px', fontWeight: '600', marginBottom: '6px' }}>
+                      AI Second Opinion (Image)
                     </h3>
                     <p style={{ fontSize: '12px', color: '#71717a', marginBottom: '16px' }}>
-                      Upload a 12-lead ECG image for AI-assisted interpretation using Claude. Requires API key.
+                      This is a second-opinion tool. It does not modify your interpretation unless you explicitly import findings or apply measurements.
                     </p>
-                    
-                    {/* API Key Input */}
+
+                    <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '10px', marginBottom: '14px' }}>
+                      <Checkbox
+                        label="I confirm the ECG image contains no patient identifiers."
+                        checked={phiConfirmed}
+                        onChange={(e) => setPhiConfirmed(e.target.checked)}
+                        description="Required before sending the image to an external API."
+                      />
+                      <Checkbox
+                        label="Send clinical context to the model (optional)."
+                        checked={sendContextToAI}
+                        onChange={(e) => setSendContextToAI(e.target.checked)}
+                        description="Default off. Only send minimal context you are permitted to share."
+                      />
+                      <Checkbox
+                        label="Use structured output (recommended)."
+                        checked={useStructuredOutputs}
+                        onChange={(e) => setUseStructuredOutputs(e.target.checked)}
+                        description="Uses JSON schema-constrained output when supported by the selected model."
+                      />
+                    </div>
+
+                    <div style={{ marginBottom: '14px' }}>
+                      <label style={{ fontSize: '11px', color: '#71717a', display: 'block', marginBottom: '6px' }}>
+                        Model
+                      </label>
+                      <select
+                        value={aiModel}
+                        onChange={(e) => setAiModel(e.target.value)}
+                        style={{
+                          width: '100%',
+                          background: '#18181b',
+                          border: '1px solid #27272a',
+                          borderRadius: '6px',
+                          padding: '10px',
+                          color: '#fff',
+                          fontSize: '13px',
+                        }}
+                      >
+                        {AI_MODEL_OPTIONS.map(m => (
+                          <option key={m.id} value={m.id}>{m.label}</option>
+                        ))}
+                      </select>
+                    </div>
+
                     <div style={{ marginBottom: '16px' }}>
                       <label style={{ fontSize: '11px', color: '#71717a', display: 'block', marginBottom: '6px' }}>
-                        Anthropic API Key {apiKey && '✓'}
+                        Anthropic API Key
                       </label>
                       <input
                         type="password"
@@ -1986,11 +2224,10 @@ Be specific about lead locations. If image quality limits interpretation, note t
                         }}
                       />
                       <div style={{ fontSize: '10px', color: '#52525b', marginTop: '4px' }}>
-                        Your key is stored locally and never sent anywhere except Anthropic's API.
+                        Key is kept in-memory. Avoid using on shared machines. Image is sent only to the Anthropic API endpoint.
                       </div>
                     </div>
-                    
-                    {/* Image Upload */}
+
                     <input
                       ref={fileInputRef}
                       type="file"
@@ -1998,7 +2235,7 @@ Be specific about lead locations. If image quality limits interpretation, note t
                       onChange={handleImageUpload}
                       style={{ display: 'none' }}
                     />
-                    
+
                     <div
                       onClick={() => fileInputRef.current?.click()}
                       style={{
@@ -2023,49 +2260,42 @@ Be specific about lead locations. If image quality limits interpretation, note t
                         />
                       ) : (
                         <div>
-                          <div style={{ fontSize: '32px', marginBottom: '8px', opacity: 0.3 }}>📄</div>
                           <div style={{ fontSize: '13px', color: '#71717a' }}>
-                            Click or drag to upload ECG image
+                            Click to upload ECG image
                           </div>
                           <div style={{ fontSize: '11px', color: '#52525b', marginTop: '4px' }}>
-                            Supports JPG, PNG. Best with high-quality 12-lead printouts.
+                            Use a high-quality 12-lead printout or screenshot.
                           </div>
                         </div>
                       )}
                     </div>
-                    
+
                     {imagePreview && (
                       <div style={{ marginTop: '16px', display: 'flex', gap: '8px' }}>
                         <button
                           onClick={analyzeWithAI}
-                          disabled={isAnalyzing || !apiKey}
+                          disabled={isAnalyzing || !apiKey || !phiConfirmed}
                           style={{
                             flex: 1,
-                            background: isAnalyzing ? '#27272a' : '#dc2626',
+                            background: (isAnalyzing || !apiKey || !phiConfirmed) ? '#27272a' : '#dc2626',
                             border: 'none',
                             borderRadius: '6px',
                             padding: '12px',
                             color: 'white',
                             fontSize: '13px',
                             fontWeight: '600',
-                            cursor: isAnalyzing ? 'not-allowed' : 'pointer',
+                            cursor: (isAnalyzing || !apiKey || !phiConfirmed) ? 'not-allowed' : 'pointer',
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
                             gap: '8px',
                           }}
                         >
-                          {isAnalyzing ? (
-                            <>
-                              <span className="animate-spin" style={{ display: 'inline-block' }}>⟳</span>
-                              Analyzing...
-                            </>
-                          ) : (
-                            <>✦ Analyze with AI</>
-                          )}
+                          {isAnalyzing ? 'Analyzing...' : 'Run second opinion'}
                         </button>
+
                         <button
-                          onClick={() => { setEcgImage(null); setImagePreview(null); setAiAnalysis(null); }}
+                          onClick={() => { setEcgImage(null); setImagePreview(null); setAiResult(null); setAiRawText(null); setAiError(null); setAiSelectedFindings({}); }}
                           style={{
                             background: '#27272a',
                             border: 'none',
@@ -2081,20 +2311,314 @@ Be specific about lead locations. If image quality limits interpretation, note t
                       </div>
                     )}
                   </div>
-                  
-                  {/* AI Analysis Result */}
-                  {aiAnalysis && (
-                    <div
-                      className="animate-fade"
-                      style={{
-                        background: '#111113',
-                        border: '1px solid #27272a',
-                        borderRadius: '8px',
-                        padding: '20px',
-                      }}
-                    >
-                      <h3 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px', color: '#22c55e' }}>
-                        ✓ AI Interpretation
+
+                  {aiError && (
+                    <div style={{
+                      background: 'rgba(245, 158, 11, 0.10)',
+                      border: '1px solid rgba(245, 158, 11, 0.25)',
+                      borderRadius: '8px',
+                      padding: '14px',
+                      marginBottom: '12px',
+                      color: '#fcd34d',
+                      fontSize: '12px',
+                    }}>
+                      {aiError}
+                    </div>
+                  )}
+
+                  {aiResult && (
+                    <div className="animate-fade" style={{
+                      background: '#111113',
+                      border: '1px solid #27272a',
+                      borderRadius: '8px',
+                      padding: '20px',
+                    }}>
+                      <h3 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px', color: '#e4e4e7' }}>
+                        Second opinion output (structured)
+                      </h3>
+
+                      <div style={{ marginBottom: '14px', fontSize: '12px', color: '#a1a1aa' }}>
+                        <div><strong>Image quality:</strong> {aiResult.image_quality?.overall || '-'}</div>
+                        {Array.isArray(aiResult.image_quality?.issues) && aiResult.image_quality.issues.length > 0 && (
+                          <ul style={{ marginTop: '6px', paddingLeft: '18px', lineHeight: '1.6' }}>
+                            {aiResult.image_quality.issues.map((x, i) => <li key={i}>{x}</li>)}
+                          </ul>
+                        )}
+                      </div>
+
+                      <div style={{ marginBottom: '14px' }}>
+                        <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '8px', fontWeight: '600', textTransform: 'uppercase' }}>
+                          Measurements (approximate)
+                        </div>
+
+                        {(() => {
+                          const m = aiResult.measurements || {};
+                          const rows = [
+                            { k: "rate_bpm", label: "Rate", unit: "bpm", applyKey: "rate" },
+                            { k: "rr_ms", label: "R-R", unit: "ms", applyKey: "rr" },
+                            { k: "pr_ms", label: "PR", unit: "ms", applyKey: "pr" },
+                            { k: "qrs_ms", label: "QRS", unit: "ms", applyKey: "qrs" },
+                            { k: "qt_ms", label: "QT", unit: "ms", applyKey: "qt" },
+                          ];
+
+                          return (
+                            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '10px' }}>
+                              {rows.map(r => {
+                                const v = m[r.k];
+                                const canApply = v !== null && v !== undefined && Number.isFinite(Number(v));
+                                return (
+                                  <div key={r.k} style={{
+                                    background: '#1f1f23',
+                                    border: '1px solid #27272a',
+                                    borderRadius: '6px',
+                                    padding: '10px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'space-between',
+                                    gap: '10px'
+                                  }}>
+                                    <div>
+                                      <div style={{ fontSize: '11px', color: '#71717a' }}>{r.label}</div>
+                                      <div style={{ fontSize: '16px', fontWeight: '600', color: '#e4e4e7', fontFamily: "'IBM Plex Mono', monospace" }}>
+                                        {canApply ? `${Math.round(Number(v))} ${r.unit}` : '-'}
+                                      </div>
+                                    </div>
+                                    <button
+                                      onClick={() => applyAIParam(r.applyKey, v)}
+                                      disabled={!canApply}
+                                      style={{
+                                        background: canApply ? '#27272a' : '#18181b',
+                                        border: '1px solid #3f3f46',
+                                        borderRadius: '6px',
+                                        padding: '8px 10px',
+                                        color: canApply ? '#e4e4e7' : '#52525b',
+                                        fontSize: '12px',
+                                        cursor: canApply ? 'pointer' : 'not-allowed'
+                                      }}
+                                    >
+                                      Apply
+                                    </button>
+                                  </div>
+                                );
+                              })}
+
+                              <div style={{
+                                background: '#1f1f23',
+                                border: '1px solid #27272a',
+                                borderRadius: '6px',
+                                padding: '10px',
+                              }}>
+                                <div style={{ fontSize: '11px', color: '#71717a' }}>QTc (Bazett)</div>
+                                <div style={{ fontSize: '16px', fontWeight: '600', color: '#e4e4e7', fontFamily: "'IBM Plex Mono', monospace" }}>
+                                  {aiResult.measurements?.qtc_bazett_ms ? `${Math.round(Number(aiResult.measurements.qtc_bazett_ms))} ms` : '-'}
+                                </div>
+                              </div>
+
+                              <div style={{
+                                background: '#1f1f23',
+                                border: '1px solid #27272a',
+                                borderRadius: '6px',
+                                padding: '10px',
+                              }}>
+                                <div style={{ fontSize: '11px', color: '#71717a' }}>Axis</div>
+                                <div style={{ fontSize: '16px', fontWeight: '600', color: '#e4e4e7', fontFamily: "'IBM Plex Mono', monospace" }}>
+                                  {aiResult.measurements?.axis_deg !== null && aiResult.measurements?.axis_deg !== undefined
+                                    ? `${Math.round(Number(aiResult.measurements.axis_deg))} deg`
+                                    : '-'}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </div>
+
+                      <div style={{ marginBottom: '14px' }}>
+                        <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '8px', fontWeight: '600', textTransform: 'uppercase' }}>
+                          Findings (select to import)
+                        </div>
+
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {(aiResult.step_findings || []).map((f, idx) => {
+                            const checked = !!aiSelectedFindings[idx];
+                            const stepName = STEP_NAME_BY_ID[f.step_id] || f.step_id;
+                            const leads = Array.isArray(f.leads) && f.leads.length ? `Leads: ${f.leads.join(", ")}` : "Leads: -";
+                            return (
+                              <label key={idx} style={{
+                                display: 'flex',
+                                gap: '10px',
+                                padding: '10px',
+                                background: checked ? 'rgba(34, 197, 94, 0.08)' : '#1f1f23',
+                                border: `1px solid ${checked ? 'rgba(34, 197, 94, 0.25)' : '#27272a'}`,
+                                borderRadius: '6px',
+                                cursor: 'pointer'
+                              }}>
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(e) => setAiSelectedFindings(s => ({ ...s, [idx]: e.target.checked }))}
+                                  style={{ marginTop: '2px', accentColor: '#22c55e' }}
+                                />
+                                <div style={{ flex: 1 }}>
+                                  <div style={{ fontSize: '12px', fontWeight: '600', color: '#e4e4e7' }}>
+                                    {stepName}: {f.finding}
+                                    <span style={{ marginLeft: '8px', fontSize: '11px', color: '#a1a1aa', fontFamily: "'IBM Plex Mono', monospace" }}>
+                                      ({f.confidence})
+                                    </span>
+                                  </div>
+                                  <div style={{ fontSize: '11px', color: '#71717a', marginTop: '3px' }}>{leads}</div>
+                                  <div style={{ fontSize: '11px', color: '#a1a1aa', marginTop: '6px', lineHeight: '1.5' }}>
+                                    {f.rationale}
+                                  </div>
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                          <button
+                            onClick={importSelectedAIFindings}
+                            style={{
+                              background: '#166534',
+                              border: 'none',
+                              borderRadius: '6px',
+                              padding: '10px 12px',
+                              color: 'white',
+                              fontSize: '12px',
+                              fontWeight: '600',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            Import selected findings
+                          </button>
+                          <button
+                            onClick={() => setAiSelectedFindings(s => {
+                              const next = {};
+                              (aiResult.step_findings || []).forEach((_, i) => { next[i] = false; });
+                              return next;
+                            })}
+                            style={{
+                              background: '#27272a',
+                              border: 'none',
+                              borderRadius: '6px',
+                              padding: '10px 12px',
+                              color: '#a1a1aa',
+                              fontSize: '12px',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            Select none
+                          </button>
+                          <button
+                            onClick={() => setAiSelectedFindings(s => {
+                              const next = {};
+                              (aiResult.step_findings || []).forEach((_, i) => { next[i] = true; });
+                              return next;
+                            })}
+                            style={{
+                              background: '#27272a',
+                              border: 'none',
+                              borderRadius: '6px',
+                              padding: '10px 12px',
+                              color: '#a1a1aa',
+                              fontSize: '12px',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            Select all
+                          </button>
+                        </div>
+                      </div>
+
+                      <div style={{ marginBottom: '12px' }}>
+                        <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '8px', fontWeight: '600', textTransform: 'uppercase' }}>
+                          Impression and differentials
+                        </div>
+
+                        {Array.isArray(aiResult.impression) && aiResult.impression.length > 0 && (
+                          <div style={{ marginBottom: '10px', color: '#a1a1aa', fontSize: '12px', lineHeight: '1.6' }}>
+                            <ul style={{ paddingLeft: '18px' }}>
+                              {aiResult.impression.map((x, i) => <li key={i}>{x}</li>)}
+                            </ul>
+                          </div>
+                        )}
+
+                        {Array.isArray(aiResult.differentials) && aiResult.differentials.length > 0 && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            {aiResult.differentials.map((d, i) => (
+                              <div key={i} style={{
+                                background: '#1f1f23',
+                                border: '1px solid #27272a',
+                                borderRadius: '6px',
+                                padding: '10px'
+                              }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px' }}>
+                                  <div style={{ fontSize: '12px', fontWeight: '700', color: '#e4e4e7' }}>
+                                    {d.diagnosis}
+                                  </div>
+                                  <div style={{ fontSize: '11px', color: '#a1a1aa', fontFamily: "'IBM Plex Mono', monospace" }}>
+                                    {d.likelihood}{d.cannot_miss ? " | cannot miss" : ""}
+                                  </div>
+                                </div>
+                                <div style={{ marginTop: '6px', fontSize: '12px', color: '#a1a1aa', lineHeight: '1.5' }}>
+                                  {d.rationale}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '12px' }}>
+                        <div style={{ background: '#0a0a0b', border: '1px solid #27272a', borderRadius: '6px', padding: '12px' }}>
+                          <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '8px', fontWeight: '600', textTransform: 'uppercase' }}>
+                            Red flags
+                          </div>
+                          {Array.isArray(aiResult.red_flags) && aiResult.red_flags.length > 0 ? (
+                            <ul style={{ paddingLeft: '18px', color: '#a1a1aa', fontSize: '12px', lineHeight: '1.6' }}>
+                              {aiResult.red_flags.map((x, i) => <li key={i}>{x}</li>)}
+                            </ul>
+                          ) : (
+                            <div style={{ color: '#52525b', fontSize: '12px' }}>-</div>
+                          )}
+                        </div>
+
+                        <div style={{ background: '#0a0a0b', border: '1px solid #27272a', borderRadius: '6px', padding: '12px' }}>
+                          <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '8px', fontWeight: '600', textTransform: 'uppercase' }}>
+                            Limitations
+                          </div>
+                          {Array.isArray(aiResult.limitations) && aiResult.limitations.length > 0 ? (
+                            <ul style={{ paddingLeft: '18px', color: '#a1a1aa', fontSize: '12px', lineHeight: '1.6' }}>
+                              {aiResult.limitations.map((x, i) => <li key={i}>{x}</li>)}
+                            </ul>
+                          ) : (
+                            <div style={{ color: '#52525b', fontSize: '12px' }}>-</div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div style={{
+                        marginTop: '12px',
+                        padding: '10px',
+                        background: 'rgba(245, 158, 11, 0.10)',
+                        borderRadius: '6px',
+                        fontSize: '11px',
+                        color: '#fcd34d',
+                      }}>
+                        Second opinion only. Verify all measurements and findings. Do not upload images containing identifiers.
+                      </div>
+                    </div>
+                  )}
+
+                  {!aiResult && aiRawText && (
+                    <div className="animate-fade" style={{
+                      background: '#111113',
+                      border: '1px solid #27272a',
+                      borderRadius: '8px',
+                      padding: '20px',
+                    }}>
+                      <h3 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '12px', color: '#e4e4e7' }}>
+                        Second opinion output (free text)
                       </h3>
                       <div style={{
                         fontSize: '13px',
@@ -2108,23 +2632,13 @@ Be specific about lead locations. If image quality limits interpretation, note t
                         maxHeight: '500px',
                         overflowY: 'auto',
                       }}>
-                        {aiAnalysis}
-                      </div>
-                      <div style={{
-                        marginTop: '12px',
-                        padding: '10px',
-                        background: 'rgba(245, 158, 11, 0.1)',
-                        borderRadius: '6px',
-                        fontSize: '11px',
-                        color: '#fcd34d',
-                      }}>
-                        ⚠ AI interpretation is for decision support only. Clinical correlation and expert review required.
+                        {aiRawText}
                       </div>
                     </div>
                   )}
                 </div>
               )}
-              
+
               {/* DIFFERENTIALS TAB */}
               {activeTab === 'differentials' && (
                 <div className="animate-fade">
